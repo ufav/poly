@@ -97,8 +97,11 @@ def collect(conn, entry_delays: tuple[int, ...]) -> tuple[list[dict], list[float
             a_name = first_ct if norm_team(outcome_a) == norm_team(first_ct) else first_t
             ml_a = norm_team(moneyline[1])
             pre_by_team = {a: (pre if norm_team(a) == ml_a else 1 - pre) for a in (first_ct, first_t)}
+            path_a = [(t, p) for t, p in series if t_half <= t <= t1]
             for team, other in ((first_ct, first_t), (first_t, first_ct)):
                 rows.append({
+                    "path": [(t, p if team == a_name else 1 - p) for t, p in path_a],
+                    "t_half": t_half, "t_r18": t0 + (t1 - t0) * 18 / len(rounds),
                     "date": start_time[:10], "tier": tier_of(tournament),
                     "team": team, "map": map_name, "first_side": "CT" if team == first_ct else "T",
                     "lead": half.get(team, 0) - half.get(other, 0), "won": winner == team,
@@ -106,6 +109,45 @@ def collect(conn, entry_delays: tuple[int, ...]) -> tuple[list[dict], list[float
                     "price": {d: (p if team == a_name else 1 - p) for d, p in prices_a.items()},
                 })
     return rows, per_round
+
+
+def exit_rules(slippage: float) -> dict:
+    """Exit functions: (row, entry time) -> sale proceeds per share, or None to hold to settlement."""
+    def sell(p: float) -> float:
+        return p - slippage - 0.05 * p * (1 - p)
+
+    def take_profit(level: float):
+        def fn(r, t_in):
+            hit = next((p for t, p in r["path"] if t > t_in and p >= level), None)
+            return sell(hit) if hit is not None else None
+        return fn
+
+    def stop_loss(level: float):
+        def fn(r, t_in):
+            hit = next((p for t, p in r["path"] if t > t_in and p <= level), None)
+            return sell(hit) if hit is not None else None
+        return fn
+
+    def at_round_18(r, t_in):
+        p = next((p for t, p in r["path"] if t >= r["t_r18"]), None)
+        return sell(p) if p is not None and p < 0.99 else None
+
+    def tp_and_sl(tp: float, sl: float):
+        def fn(r, t_in):
+            hit = next((p for t, p in r["path"] if t > t_in and (p >= tp or p <= sl)), None)
+            return sell(hit) if hit is not None else None
+        return fn
+
+    return {
+        "hold to the end of the map": lambda r, t: None,
+        "take profit at 0.93": take_profit(0.93),
+        "take profit at 0.95": take_profit(0.95),
+        "take profit at 0.97": take_profit(0.97),
+        "sell at ~round 18 (if still < 0.99)": at_round_18,
+        "stop loss at 0.60": stop_loss(0.60),
+        "stop loss at 0.50": stop_loss(0.50),
+        "take profit 0.95 + stop loss 0.60": tp_and_sl(0.95, 0.60),
+    }
 
 
 def line(label: str, items: list[dict], delay: int, slippage: float) -> str:
@@ -179,6 +221,21 @@ def main() -> None:
     for label, items in splits.items():
         if len(items) >= 10:
             print(line(label, items, d, args.slippage))
+
+    print("\n6. Same rule, exit variants (sell = price - slippage - taker fee; hold = $1 / $0 at settlement)")
+    for label, exit_fn in exit_rules(args.slippage).items():
+        pnl, cost, early = 0.0, 0.0, 0
+        for r in rule:
+            entry = r["price"][d] + args.slippage
+            fee_in = 0.05 * r["price"][d] * (1 - r["price"][d])
+            proceeds = exit_fn(r, r["t_half"] + d)
+            if proceeds is None:
+                proceeds = 1.0 if r["won"] else 0.0
+            else:
+                early += 1
+            pnl += proceeds - entry - fee_in
+            cost += entry + fee_in
+        print(f"   {label:40} n={len(rule)}  sold early {early:4d}  profit/trade {pnl / len(rule):+.4f}  ROI {pnl / cost:+6.2%}")
 
     print(f"\n4. Mirror: underdog (pre-match <= {1 - args.fav:.2f}) leads at halftime: buy the underdog")
     dog_rows = [r for r in rows if r["pre"] <= 1 - args.fav and r["lead"] > 0]
