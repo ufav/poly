@@ -6,6 +6,7 @@ on:
     paths:
       - "pmbot/**"
       - "scripts/**"
+      - "!scripts/research/**"
       - "Dockerfile"
       - "docker-compose.yml"
       - "requirements.txt"
