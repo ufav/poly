@@ -55,13 +55,13 @@ def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None,
         ps = ps_windows(conn, pm_game_id) if timing == "pandascore" else {}
         markets = {}
         moneyline = None
-        for mtype, num, token, outcome_a in conn.execute(
-                """SELECT market_type, map_number, token_a, outcome_a FROM pm_markets
+        for mtype, num, token, outcome_a, cond, token_b in conn.execute(
+                """SELECT market_type, map_number, token_a, outcome_a, condition_id, token_b FROM pm_markets
                    WHERE event_id = ? AND history_status = 'done'""", (event_id,)):
             if mtype == "child_moneyline" and num:
-                markets[num] = (token, outcome_a)
+                markets[num] = (token, outcome_a, cond, token_b)
             elif mtype == "moneyline":
-                moneyline = (token, outcome_a)
+                moneyline = (token, outcome_a, cond, token_b)
         if not moneyline or not start_time:
             continue
         start_ts = int(dt.datetime.fromisoformat(start_time.replace("Z", "+00:00")).timestamp())
@@ -91,7 +91,7 @@ def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None,
             maps_won[winner] += 1
             if not market:
                 break
-            token, outcome_a = market
+            token, outcome_a, cond, token_b = market
             series = price_series(conn, token) if market is not moneyline else ml_series
             a_won = norm_team(outcome_a) == norm_team(winner)
             if not a_won and norm_team(outcome_a) not in (norm_team(first_ct), norm_team(first_t)):
@@ -130,6 +130,8 @@ def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None,
                     "lead": half.get(team, 0) - half.get(other, 0), "won": winner == team,
                     "seq": [r[4] == team for r in rounds[:12]],
                     "seq_all": [r[4] == team for r in rounds], "t0": t0, "t1": t1,
+                    "cond": cond, "token": token if team == a_name else token_b,
+                    "token_other": token_b if team == a_name else token,
                     "pre": pre_by_team[team],
                     "price": {d: (p if team == a_name else 1 - p) for d, p in prices_a.items()},
                 })

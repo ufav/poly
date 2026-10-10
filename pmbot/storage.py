@@ -112,6 +112,19 @@ CREATE TABLE IF NOT EXISTS cs_team_players (
     PRIMARY KEY (team_id, player_id, since)
 ) WITHOUT ROWID;
 
+-- taker trades (Data API /trades?takerOnly=true): side/price of the taker for `asset`
+CREATE TABLE IF NOT EXISTS pm_trades (
+    condition_id TEXT,
+    asset        TEXT,
+    t            INTEGER,
+    side         TEXT,
+    price        REAL,
+    size         REAL,
+    tx           TEXT,
+    UNIQUE (condition_id, tx, asset, side, price, size)
+);
+CREATE INDEX IF NOT EXISTS pm_trades_cond_t ON pm_trades(condition_id, t);
+
 -- player stats per map from cybersport match-stats; game_id = cs_games.id; team via cs_team_players at match date
 CREATE TABLE IF NOT EXISTS cs_player_stats (
     game_id    TEXT,
@@ -164,6 +177,7 @@ MIGRATIONS = [
     ("cs_matches", "location", "TEXT"),
     ("cs_matches", "stage_since", "TEXT"),
     ("cs_matches", "stage_till", "TEXT"),
+    ("pm_markets", "trades_status", "TEXT"),
 ]
 
 

@@ -8,7 +8,9 @@ from pmbot.http import HttpClient
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
+DATA = "https://data-api.polymarket.com"
 CS2_SERIES_ID = 10310
+TRADES_PAGE = 500
 HISTORY_MARKET_TYPES = {"moneyline", "child_moneyline"}
 HISTORY_BEFORE_START = dt.timedelta(hours=6)
 HISTORY_AFTER_START = dt.timedelta(hours=12)
@@ -119,3 +121,29 @@ def collect_pending_histories(http: HttpClient, conn: sqlite3.Connection, limit:
             print(f"  histories {i}/{len(rows)}", flush=True)
     conn.commit()
     return len(rows)
+
+
+def fetch_trades(http: HttpClient, condition_id: str, max_pages: int = 20) -> list[dict] | None:
+    """Taker trades of a market (newest first in the API); None on error. side/price are for `asset`."""
+    out = []
+    for page in range(max_pages):
+        r = http.get(f"{DATA}/trades", {"market": condition_id, "limit": TRADES_PAGE,
+                                        "offset": page * TRADES_PAGE, "takerOnly": "true"})
+        if r.status_code != 200:
+            return out or None
+        batch = r.json()
+        out += batch
+        if len(batch) < TRADES_PAGE:
+            break
+    return out
+
+
+def save_trades(conn: sqlite3.Connection, market_id: str, trades: list[dict] | None) -> None:
+    with conn:
+        conn.executemany(
+            """INSERT OR IGNORE INTO pm_trades (condition_id, asset, t, side, price, size, tx)
+               VALUES (?,?,?,?,?,?,?)""",
+            [(x["conditionId"], x["asset"], x["timestamp"], x["side"], x["price"], x["size"], x.get("transactionHash"))
+             for x in trades or []])
+        conn.execute("UPDATE pm_markets SET trades_status=? WHERE id=?",
+                     ("error" if trades is None else "done" if trades else "empty", market_id))
