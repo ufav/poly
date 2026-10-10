@@ -31,7 +31,9 @@ def load_rounds(conn, game_id: str) -> list[tuple]:
         (game_id,)).fetchall()
 
 
-def collect(conn, entry_delays: tuple[int, ...]) -> tuple[list[dict], list[float]]:
+def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None) -> tuple[list[dict], list[float]]:
+    """Halftime rows per team; if `windows` is given, also appends every timed map:
+    {"path": [(t, price of first-half CT team)], "t0", "t1", "rounds", "ct_won", "date"}."""
     rows = []
     per_round = []
     matches = conn.execute(
@@ -90,11 +92,17 @@ def collect(conn, entry_delays: tuple[int, ...]) -> tuple[list[dict], list[float
             per_round.append(mpr)
             if not MIN_PER_ROUND[0] <= mpr <= MIN_PER_ROUND[1]:
                 continue
+            a_name = first_ct if norm_team(outcome_a) == norm_team(first_ct) else first_t
+            if windows is not None:
+                windows.append({
+                    "path": [(t, p if a_name == first_ct else 1 - p) for t, p in series if t0 <= t <= t1],
+                    "t0": t0, "t1": t1, "rounds": len(rounds), "ct_won": winner == first_ct,
+                    "date": start_time[:10],
+                })
             t_half = t0 + (t1 - t0) * 12 / len(rounds)
             prices_a = {d: price_at(series, int(t_half + d)) for d in entry_delays}
             if any(p is None for p in prices_a.values()):
                 continue
-            a_name = first_ct if norm_team(outcome_a) == norm_team(first_ct) else first_t
             ml_a = norm_team(moneyline[1])
             pre_by_team = {a: (pre if norm_team(a) == ml_a else 1 - pre) for a in (first_ct, first_t)}
             path_a = [(t, p) for t, p in series if t_half <= t <= t1]
