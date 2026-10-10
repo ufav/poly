@@ -11,6 +11,12 @@ pmbot/                    пакет с переиспользуемым код�
   join.py                 связка cybersport ↔ Polymarket (external_id, иначе имена + дата ±1 день)
   geo.py                  часовые пояса: дом команды (страны игроков) и город турнира
   maptiming.py            оценка начала/конца карты и момента перерыва по траектории цены
+  telegram.py             уведомления (выключены без TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
+  live/                   бот-регистратор и бумажная торговля
+    feeds.py              sports WebSocket (счёт), Gamma (матчи, рынки, расчёт), CLOB /book
+    store.py              база data/live.sqlite
+    paper.py              правила, симуляция исполнения по стакану, расчёт
+    report.py             сводка по правилам
 scripts/
   check_env.py            проверка .env
   collect_polymarket.py   сбор истории Polymarket за период (повторный запуск докачивает)
@@ -18,6 +24,8 @@ scripts/
   collect_cs_teams.py     составы команд с датами и национальностью игроков
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков
+  paper_bot.py            бот: регистратор live-матчей + бумажные сделки (запускается в Docker)
+  paper_report.py         отчёт по бумажным сделкам
   research/               разовые исследовательские скрипты
 analysis/                 проверки гипотез (результаты — docs/research.md)
 data/
@@ -42,6 +50,27 @@ docs/                     CJM, архитектура, бэклог
 
 Связка с Polymarket (`pmbot/join.py`): точная по `external_id`, иначе по нормализованным именам команд и дате ±1 день; синонимы имён («FaZe Clan» ↔ «FaZe») выучиваются из точных связок. На 880 точных связках: 876 совпадений, 0 ошибок.
 
+## Бот-регистратор и бумажная торговля (`scripts/paper_bot.py`)
+
+Реальных ордеров не ставит, приватный ключ не нужен. Асинхронные циклы:
+
+- поиск матчей: открытые события CS2 в Gamma раз в 60 с → `live_games`, `live_markets`;
+- счёт: sports WebSocket, каждое изменение счёта/карты со временем прихода → `live_scores` (у части матчей раунды «000-000» — данных нет);
+- стакан текущей карты (оба исхода) раз в `BOOK_INTERVAL` с, при изменении → `live_books` (топ-10 уровней);
+- правила (`pmbot/live/paper.py`) в перерыве карты (12–13 раундов): сигнал → через 1 с берётся стакан, покупка на `PAPER_STAKE_USD` по заявкам продавцов + комиссия → `paper_trades` (`open` / `unfilled`, если продавцов нет);
+- расчёт по закрытию рынка в Gamma раз в 2 мин → `settled`, P&L;
+- Telegram: сигнал, расчёт, итог дня в `REPORT_HOUR_UTC`; в `CS_COLLECT_HOUR_UTC` — сбор cybersport.ru за 2 дня (стороны первой половины для анализа).
+
+База `data/live.sqlite`: `live_games`, `live_markets`, `live_scores`, `live_books`, `paper_trades`.
+
+### Деплой (Linux + Docker)
+
+1. Скопировать проект на сервер без `data/` и `.env`, например: `scp -r pmbot scripts requirements.txt Dockerfile docker-compose.yml .dockerignore user@server:~/polymarket/`.
+2. На сервере создать `~/polymarket/.env` только с переменными бота (`TELEGRAM_*`, `PAPER_*` из `.env.example`) — **приватный ключ на сервер не класть**.
+3. Telegram: создать бота у @BotFather → `TELEGRAM_BOT_TOKEN`; написать боту любое сообщение, открыть `https://api.telegram.org/bot<TOKEN>/getUpdates` → `chat.id` → `TELEGRAM_CHAT_ID`.
+4. `cd ~/polymarket && docker compose up -d --build`; логи — `docker compose logs -f`; отчёт — `docker compose exec paper-bot python scripts/paper_report.py`.
+5. Обновление: скопировать новые файлы и `docker compose up -d --build`. Данные лежат в `~/polymarket/data` (том), переживают перезапуск.
+
 ## Источники данных
 
 | Источник | Что даёт | Ограничения |
@@ -49,7 +78,8 @@ docs/                     CJM, архитектура, бэклог
 | Polymarket Gamma `gamma-api.polymarket.com` | События CS2 (`series_id=10310`), рынки, исходы, `gameId`, счёт по картам | `closed=false` возвращает и старые нерассчитанные события; без своего `User-Agent` из Python — 403 |
 | Polymarket CLOB `prices-history` | История цены токена. С `startTs/endTs` и `fidelity=1` — поминутно | Без окна (`interval=max`) точки редкие (~10 мин) |
 | Polymarket Data API `/trades` | Все сделки по рынку с временем, ценой, объёмом | — |
-| Polymarket sports WS `wss://sports-api.polymarket.com/ws` | Статус, номер карты, счёт по картам, раз в ~20 с | Раунды почти всегда `000-000`, сторон нет |
+| Polymarket sports WS `wss://sports-api.polymarket.com/ws` | `gameId`, команды, счёт `раунды|карты|BoN`, номер карты, статус; изменения приходят почти сразу (проверено 10.10.2026) | У части матчей раунды `000-000`; сторон CT/T нет; поле `score` в Gamma обновляется лишь раз в ~5 мин |
+| cybersport.ru match-stats в лайве | — | Раунды появляются только после окончания карты — для лайва не годится |
 | cybersport.ru `/api/matches?filter[date]=…&filter[disciplineIds]=22` | Матчи CS2 за день (дата МСК), команды, турнир, коэффициенты | Неофициальный API |
 | cybersport.ru `/api/matches/<id>` | Карты матча: название, счёт, id для связки с раундами | ~260 КБ на матч, `include` игнорируется |
 | cybersport.ru `/api/teams/<id>` | История состава: игроки, страна, даты прихода/ухода; статистика команды по картам | Страна игрока ≠ место жительства команды (буткемпы) |
