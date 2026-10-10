@@ -45,6 +45,7 @@
 | T-1 | Источник счёта в лайве: sports WS Polymarket (почти мгновенно, но у части матчей `000-000`); cybersport — только после карты; Gamma `score` — раз в 5 мин | done |
 | T-2 | Бот-регистратор + бумажная торговля (`scripts/paper_bot.py`, Docker): правила `fav_comeback_half`, `fav_comeback_wide`, `leader_half`, `leader_half6`, исполнение по стакану, Telegram | done |
 | T-4 | Развернуть бота на сервере пользователя, проверить Telegram (запущен 10.10.2026, правила `fav_comeback_half`, `fav_comeback_wide`, `leader_half`, `leader_half6`, ставка $100) | done |
+| T-7 | Автодеплой через GitHub Actions по SSH (`.github/workflows/deploy.yml`); секреты `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` задаёт пользователь | doing |
 | T-5 | Через 2–4 недели: отчёт по бумажным сделкам + перепроверка гипотез на `live_scores` (настоящее время раундов) + стороны из cybersport (A-15) | todo |
 | T-6 | Доля сигналов «не исполнено» (пустой стакан карт мелких турниров) — фильтр по ликвидности | todo |
 | T-3 | Ордеры через SDK с подтверждением и лимитами | todo |
