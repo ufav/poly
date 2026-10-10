@@ -129,6 +129,7 @@ def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None,
                     "team": team, "map": map_name, "first_side": "CT" if team == first_ct else "T",
                     "lead": half.get(team, 0) - half.get(other, 0), "won": winner == team,
                     "seq": [r[4] == team for r in rounds[:12]],
+                    "seq_all": [r[4] == team for r in rounds], "t0": t0, "t1": t1,
                     "pre": pre_by_team[team],
                     "price": {d: (p if team == a_name else 1 - p) for d, p in prices_a.items()},
                 })
