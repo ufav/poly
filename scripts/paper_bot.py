@@ -79,6 +79,10 @@ class Bot:
             gid = item.get("gameId")
             if gid is None:
                 continue
+            prev = self.last_key.get(gid)
+            if prev and prev[0] and str(item.get("score") or "").startswith("000-000"):
+                # the feed interleaves '000-000' frames for all CS2 games every ~20 s; keep the last real score
+                item = {**item, "score": prev[0]}
             key = (item.get("score"), item.get("period"), item.get("status"), item.get("ended"))
             self.live[gid] = item
             if self.last_key.get(gid) == key or gid not in self.games:

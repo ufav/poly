@@ -87,7 +87,7 @@ Push в `main` с изменениями в `pmbot/`, `scripts/`, `Dockerfile`, 
 | Polymarket Gamma `gamma-api.polymarket.com` | События CS2 (`series_id=10310`), рынки, исходы, `gameId`, счёт по картам | `closed=false` возвращает и старые нерассчитанные события; без своего `User-Agent` из Python — 403 |
 | Polymarket CLOB `prices-history` | История цены токена. С `startTs/endTs` и `fidelity=1` — поминутно | Без окна (`interval=max`) точки редкие (~10 мин) |
 | Polymarket Data API `/trades` | Все сделки по рынку с временем, ценой, объёмом | — |
-| Polymarket sports WS `wss://sports-api.polymarket.com/ws` | `gameId`, команды, счёт `раунды|карты|BoN`, номер карты, статус; изменения приходят почти сразу (проверено 10.10.2026) | У части матчей раунды `000-000`; сторон CT/T нет; поле `score` в Gamma обновляется лишь раз в ~5 мин |
+| Polymarket sports WS `wss://sports-api.polymarket.com/ws` | `gameId`, команды, счёт `раунды|карты|BoN`, номер карты, статус; изменения приходят почти сразу (проверено 10.10.2026) | Раз в ~20 с по всем матчам CS2 приходит кадр с раундами `000-000`, между ними — настоящий счёт (бот держит последний настоящий); у части матчей только `000-000`; сторон CT/T нет; поле `score` в Gamma обновляется лишь раз в ~5 мин |
 | cybersport.ru match-stats в лайве | — | Раунды появляются только после окончания карты — для лайва не годится |
 | cybersport.ru `/api/matches?filter[date]=…&filter[disciplineIds]=22` | Матчи CS2 за день (дата МСК), команды, турнир, коэффициенты | Неофициальный API |
 | cybersport.ru `/api/matches/<id>` | Карты матча: название, счёт, id для связки с раундами | ~260 КБ на матч, `include` игнорируется |
