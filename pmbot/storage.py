@@ -48,12 +48,58 @@ CREATE TABLE IF NOT EXISTS pm_prices (
     p         REAL,
     PRIMARY KEY (token_id, t)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS cs_matches (
+    id            TEXT PRIMARY KEY,
+    date          TEXT,
+    time          TEXT,
+    format        TEXT,
+    is_finished   INTEGER,
+    team1         TEXT,
+    team2         TEXT,
+    score1        INTEGER,
+    score2        INTEGER,
+    tournament    TEXT,
+    tier          INTEGER,
+    external_id   INTEGER,
+    stats_team1   TEXT,
+    stats_team2   TEXT,
+    begin_at      INTEGER,
+    odds          TEXT,
+    stats_status  TEXT,
+    fetched_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS cs_matches_external ON cs_matches(external_id);
+CREATE INDEX IF NOT EXISTS cs_matches_date ON cs_matches(date);
+
+CREATE TABLE IF NOT EXISTS cs_games (
+    id           TEXT PRIMARY KEY,
+    match_id     TEXT REFERENCES cs_matches(id),
+    number       INTEGER,
+    map_name     TEXT,
+    score1       INTEGER,
+    score2       INTEGER,
+    external_id  TEXT,
+    rounds       INTEGER
+);
+CREATE INDEX IF NOT EXISTS cs_games_match ON cs_games(match_id);
+
+CREATE TABLE IF NOT EXISTS cs_rounds (
+    game_id      TEXT,
+    round        INTEGER,
+    ct_team      TEXT,
+    t_team       TEXT,
+    winner_side  TEXT,
+    winner_team  TEXT,
+    outcome      TEXT,
+    PRIMARY KEY (game_id, round)
+) WITHOUT ROWID;
 """
 
 
 def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=120)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     return conn

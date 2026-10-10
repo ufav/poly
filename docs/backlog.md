@@ -8,8 +8,10 @@
 |----|--------|--------|
 | D-1 | Сборщик Polymarket: события CS2, рынки, поминутные цены матча и карт → SQLite (`scripts/collect_polymarket.py`) | done |
 | D-2 | Прогон сбора за всё время (с сен 2025), докачка при перезапуске | doing |
-| D-3 | Сборщик cybersport.ru: список матчей по датам → раунды/стороны по картам | todo |
-| D-4 | Связка матчей Polymarket ↔ cybersport по `gameId`/`externalId`, запасной вариант — команды + дата | todo |
+| D-3 | Сборщик cybersport.ru: список матчей по датам → карты → раунды/стороны (`scripts/collect_cybersport.py`); прогон за год | doing |
+| D-4 | Связка матчей Polymarket ↔ cybersport: `pm_events.game_id = cs_matches.external_id` (проверено, имена команд совпадают) | done |
+| D-7 | Дозапуск сборщика Polymarket для матчей, закрывшихся после прохода по списку | todo |
+| D-8 | Коэффициенты букмекера из cybersport (`cs_matches.odds`) как второй источник «фаворита» | todo |
 | D-5 | Подать заявку в GRID Open Access (делает пользователь) | todo |
 | D-6 | Цены остальных рынков (форы, тоталы) — если понадобятся для гипотез | todo |
 

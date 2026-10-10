@@ -7,9 +7,11 @@ pmbot/                    пакет с переиспользуемым код�
   http.py                 HTTP-клиент: User-Agent, ретраи, пауза между запросами
   storage.py              SQLite-схема и запись
   polymarket.py           Gamma / CLOB / Data API: события, рынки, история цен
+  cybersport.py           cybersport.ru: матчи CS2, карты, раунды
 scripts/
   check_env.py            проверка .env
   collect_polymarket.py   сбор истории Polymarket за период (повторный запуск докачивает)
+  collect_cybersport.py   сбор матчей/карт/раундов cybersport.ru по дням (повторный запуск докачивает)
   db_summary.py           статистика базы и пример траектории цены
   research/               разовые исследовательские скрипты
 data/
@@ -26,6 +28,10 @@ docs/                     CJM, архитектура, бэклог
 
 История качается только для `moneyline` и `child_moneyline`; остальные рынки хранятся без цен.
 
+- `cs_matches` — матч cybersport.ru: дата (МСК), формат, команды и счёт по картам в порядке сайта, турнир, tier, `external_id` (= `pm_events.game_id`), коэффициенты букмекера, `stats_status` (`done` — есть раунды, `none` — нет).
+- `cs_games` — карты матча по порядку: название карты, счёт (`score1/score2` в порядке команд сайта), число раундов.
+- `cs_rounds` — раунд: команда на CT, команда на T, победившая сторона и команда, исход (`eliminated`/`exploded`/`defused`/...). Имена команд — как в Polymarket.
+
 ## Источники данных
 
 | Источник | Что даёт | Ограничения |
@@ -34,10 +40,12 @@ docs/                     CJM, архитектура, бэклог
 | Polymarket CLOB `prices-history` | История цены токена. С `startTs/endTs` и `fidelity=1` — поминутно | Без окна (`interval=max`) точки редкие (~10 мин) |
 | Polymarket Data API `/trades` | Все сделки по рынку с временем, ценой, объёмом | — |
 | Polymarket sports WS `wss://sports-api.polymarket.com/ws` | Статус, номер карты, счёт по картам, раз в ~20 с | Раунды почти всегда `000-000`, сторон нет |
-| cybersport.ru `/api/v1/match-stats/csgo?filter[internalId]=<id>` | Раунды: CT/T, победившая сторона и команда, исход раунда; статистика игроков | Неофициальный API; статистика есть примерно у 1/3 матчей на сайте; лайв не подтверждён |
+| cybersport.ru `/api/matches?filter[date]=…&filter[disciplineIds]=22` | Матчи CS2 за день (дата МСК), команды, турнир, коэффициенты | Неофициальный API |
+| cybersport.ru `/api/matches/<id>` | Карты матча: название, счёт, id для связки с раундами | ~260 КБ на матч, `include` игнорируется |
+| cybersport.ru `/api/v1/match-stats/csgo?filter[internalId]=<id>` | Раунды: CT/T, победившая сторона и команда, исход раунда; статистика игроков | Есть примерно у 40% матчей; лайв не подтверждён |
 | GRID Open Access | Официальные данные CS2, раунды, стороны, история | Нужна заявка; 10 запросов/мин |
 
-`gameId` Polymarket и `externalId` cybersport.ru, судя по всему, из одного пространства номеров (вероятно, PandaScore) — ключ для связки матчей.
+`gameId` Polymarket = `externalId` в match-stats cybersport.ru (проверено на 6 из 6 матчей, имена команд совпадают; вероятно, оба берут данные у PandaScore) — ключ для связки матчей.
 
 ## Рынки CS2 на Polymarket
 
