@@ -10,6 +10,7 @@ pmbot/                    пакет с переиспользуемым код�
   cybersport.py           cybersport.ru: матчи CS2, карты, раунды, составы команд
   join.py                 связка cybersport ↔ Polymarket (external_id, иначе имена + дата ±1 день)
   geo.py                  часовые пояса: дом команды (страны игроков) и город турнира
+  maptiming.py            оценка начала/конца карты и момента перерыва по траектории цены
 scripts/
   check_env.py            проверка .env
   collect_polymarket.py   сбор истории Polymarket за период (повторный запуск докачивает)
