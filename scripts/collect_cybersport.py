@@ -48,6 +48,8 @@ def main() -> None:
                 stats = cybersport.fetch_stats(http, match["id"])
                 games = cybersport.fetch_games(http, match["id"]) if stats else []
                 cybersport.save_match(conn, match, stats, games)
+                if stats:
+                    cybersport.save_player_stats(conn, match["id"], stats)
                 day_stats["matches"] += 1
                 day_stats["with_rounds"] += int(stats is not None)
             for k, v in day_stats.items():

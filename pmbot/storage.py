@@ -112,6 +112,26 @@ CREATE TABLE IF NOT EXISTS cs_team_players (
     PRIMARY KEY (team_id, player_id, since)
 ) WITHOUT ROWID;
 
+-- player stats per map from cybersport match-stats; game_id = cs_games.id; team via cs_team_players at match date
+CREATE TABLE IF NOT EXISTS cs_player_stats (
+    game_id    TEXT,
+    player_id  TEXT,
+    nickname   TEXT,
+    kills      INTEGER,
+    deaths     INTEGER,
+    assists    INTEGER,
+    adr        REAL,
+    kast       REAL,
+    rating     REAL,
+    PRIMARY KEY (game_id, player_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS cs_player_stats_status (
+    match_id   TEXT PRIMARY KEY,
+    players    INTEGER,
+    fetched_at TEXT
+);
+
 -- PandaScore map timing; match_id = pm_events.game_id, position = map number
 CREATE TABLE IF NOT EXISTS ps_games (
     match_id   INTEGER,

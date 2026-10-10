@@ -23,6 +23,7 @@ scripts/
   collect_polymarket.py   сбор истории Polymarket за период (повторный запуск докачивает)
   collect_cybersport.py   сбор матчей/карт/раундов cybersport.ru по дням (повторный запуск докачивает)
   collect_cs_teams.py     составы команд с датами и национальностью игроков
+  collect_cs_players.py   статистика игроков по картам для уже собранных матчей (новые — в collect_cybersport.py)
   collect_pandascore.py   время карт PandaScore для всех матчей Polymarket (нужен PANDASCORE_ACCESS_TOKEN)
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков
@@ -48,6 +49,7 @@ docs/                     CJM, архитектура, бэклог
 - `cs_games` — карты матча по порядку: название карты, счёт (`score1/score2` в порядке команд сайта), число раундов.
 - `cs_rounds` — раунд: команда на CT, команда на T, победившая сторона и команда, исход (`eliminated`/`exploded`/`defused`/...). Имена команд — как в Polymarket.
 - В `cs_matches` также: `team1_id/team2_id` (id команд cybersport), `location` турнира («Город, Страна»; пусто — онлайн), `stage_since/stage_till` — даты турнира.
+- `cs_player_stats` — игрок на карте (`game_id` = `cs_games.id`): kills, deaths, assists, ADR, KAST, `rating` (**общий рейтинг игрока на момент загрузки, не за карту** — для анализа не использовать). Команда игрока — через `cs_team_players` на дату матча. `cs_player_stats_status` — какие матчи уже загружены.
 - `ps_games` — карта по PandaScore: `match_id` (= `pm_events.game_id`), `position` (номер карты), `begin_at`, `end_at`, `length` (с), победитель. `ps_matches` — статус матча и время загрузки (`missing` — нет в PandaScore).
 - `cs_teams`, `cs_team_players` — составы: игрок, страна (`country_code`), статус (`player`/`substitute`/`coach`), `since/till`. `cs_countries` — код страны ↔ русское название (для разбора `location`).
 

@@ -2,7 +2,7 @@
 
 - GET /api/matches?filter[date]=YYYY-MM-DD&filter[disciplineIds]=22  -> matches of the day (Moscow date)
 - GET /api/matches/{id}                                              -> games (maps) with map names and scores
-- GET /api/v1/match-stats/csgo?filter[internalId]={id}               -> rounds per game; 404 if no stats
+- GET /api/v1/match-stats/csgo?filter[internalId]={id}               -> rounds and player stats per game; 404 if no stats
 - GET /api/teams/{id}                                                -> roster history, player nationality
 Tournament (`stage`) carries `location` ("Город, Страна") and since/till dates.
 `externalId` in match-stats looks like the PandaScore match id, same as Polymarket `gameId`.
@@ -159,6 +159,37 @@ def save_team(conn: sqlite3.Connection, team: dict) -> None:
              for p in team["players"] if p["player_id"]],
         )
         conn.executemany("INSERT OR REPLACE INTO cs_countries (code, title) VALUES (?,?)", team["countries"].items())
+
+
+def player_stats(stats: dict) -> list[tuple]:
+    """(game_id, player_id, nickname, kills, deaths, assists, adr, kast, rating) per player per map (totals skipped)."""
+    inc = _index(stats)
+    out = []
+    for g in stats.get("included", []):
+        if g["type"] != "csgo_match_game" or g["attributes"].get("isTotal") or not g["attributes"].get("internalId"):
+            continue
+        for ref in (g.get("relationships") or {}).get("participants", {}).get("data") or []:
+            p = inc.get(("csgo_match_game_participant", ref["id"]))
+            pl_ref = _ref(p, "player") if p else None
+            pl = inc.get(("csgo_player", pl_ref["id"])) if pl_ref else None
+            if not pl:
+                continue
+            a, pa = p["attributes"], pl["attributes"]
+            out.append((str(g["attributes"]["internalId"]), str(pa.get("internalId")),
+                        (pa.get("externalName") or "").split(" (")[0], a.get("kills"), a.get("deaths"),
+                        a.get("assists"), a.get("adr"), a.get("kast"), a.get("rating")))
+    return out
+
+
+def save_player_stats(conn: sqlite3.Connection, match_id: str, stats: dict | None) -> int:
+    rows = player_stats(stats) if stats else []
+    with conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO cs_player_stats (game_id, player_id, nickname, kills, deaths, assists, adr, kast, rating)
+               VALUES (?,?,?,?,?,?,?,?,?)""", rows)
+        conn.execute("INSERT OR REPLACE INTO cs_player_stats_status (match_id, players, fetched_at) VALUES (?,?,?)",
+                     (match_id, len(rows), dt.datetime.now(dt.timezone.utc).isoformat()))
+    return len(rows)
 
 
 def save_match(conn: sqlite3.Connection, match: dict, stats: dict | None, games: list[dict]) -> None:
