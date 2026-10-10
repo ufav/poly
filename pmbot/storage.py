@@ -94,7 +94,38 @@ CREATE TABLE IF NOT EXISTS cs_rounds (
     outcome      TEXT,
     PRIMARY KEY (game_id, round)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS cs_teams (
+    id          TEXT PRIMARY KEY,
+    title       TEXT,
+    fetched_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cs_team_players (
+    team_id       TEXT,
+    player_id     TEXT,
+    nickname      TEXT,
+    country_code  TEXT,
+    status        TEXT,
+    since         TEXT,
+    till          TEXT,
+    PRIMARY KEY (team_id, player_id, since)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS cs_countries (
+    code   TEXT PRIMARY KEY,
+    title  TEXT
+);
 """
+
+# columns added after the first release: (table, column, type)
+MIGRATIONS = [
+    ("cs_matches", "team1_id", "TEXT"),
+    ("cs_matches", "team2_id", "TEXT"),
+    ("cs_matches", "location", "TEXT"),
+    ("cs_matches", "stage_since", "TEXT"),
+    ("cs_matches", "stage_till", "TEXT"),
+]
 
 
 def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
@@ -102,4 +133,8 @@ def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=120)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    for table, column, kind in MIGRATIONS:
+        if column not in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    conn.commit()
     return conn

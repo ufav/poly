@@ -1,7 +1,7 @@
 """Collect CS2 matches, maps and round-by-round data from cybersport.ru into SQLite.
 
 Re-running is safe: finished matches already stored are skipped, except the last --refresh-days
-(round stats may appear with a delay).
+(round stats may appear with a delay); for skipped matches only team ids and tournament location/dates are updated.
 
 Examples:
   python scripts/collect_cybersport.py --since 2025-09-01
@@ -42,6 +42,7 @@ def main() -> None:
                 if not match["is_finished"]:
                     continue
                 if match["id"] in known and day < refresh_from:
+                    cybersport.save_meta(conn, match)
                     totals["skipped"] += 1
                     continue
                 stats = cybersport.fetch_stats(http, match["id"])

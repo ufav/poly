@@ -3,6 +3,8 @@
 - GET /api/matches?filter[date]=YYYY-MM-DD&filter[disciplineIds]=22  -> matches of the day (Moscow date)
 - GET /api/matches/{id}                                              -> games (maps) with map names and scores
 - GET /api/v1/match-stats/csgo?filter[internalId]={id}               -> rounds per game; 404 if no stats
+- GET /api/teams/{id}                                                -> roster history, player nationality
+Tournament (`stage`) carries `location` ("Город, Страна") and since/till dates.
 `externalId` in match-stats looks like the PandaScore match id, same as Polymarket `gameId`.
 """
 
@@ -22,6 +24,12 @@ def _index(doc: dict) -> dict:
 
 def _ref(obj: dict, rel: str) -> dict | None:
     return ((obj.get("relationships") or {}).get(rel) or {}).get("data")
+
+
+def _ymd(d: dict | None) -> str | None:
+    if not d or not d.get("year"):
+        return None
+    return dt.date(d["year"], d.get("month") or 1, d.get("day") or 1).isoformat()
 
 
 def list_matches(http: HttpClient, date: dt.date) -> list[dict]:
@@ -44,10 +52,12 @@ def list_matches(http: HttpClient, date: dt.date) -> list[dict]:
                 team = inc.get(("team", team_ref["id"])) if team_ref else None
                 parts.append({
                     "team": team["attributes"].get("title") if team else None,
+                    "team_id": team["id"] if team else None,
                     "score": p["attributes"].get("matchScore") if p else None,
                 })
             stage_ref = _ref(m, "stage")
             stage = inc.get(("stage", stage_ref["id"])) if stage_ref else None
+            sa = stage["attributes"] if stage else {}
             a = m["attributes"]
             result.append({
                 "id": m["id"],
@@ -57,8 +67,12 @@ def list_matches(http: HttpClient, date: dt.date) -> list[dict]:
                 "is_finished": bool(a.get("isFinished")),
                 "team1": parts[0]["team"], "score1": parts[0]["score"],
                 "team2": parts[1]["team"], "score2": parts[1]["score"],
-                "tournament": stage["attributes"].get("title") if stage else None,
-                "tier": stage["attributes"].get("tier") if stage else None,
+                "team1_id": parts[0]["team_id"], "team2_id": parts[1]["team_id"],
+                "tournament": sa.get("title"),
+                "tier": sa.get("tier"),
+                "location": sa.get("location"),
+                "stage_since": _ymd(sa.get("since")),
+                "stage_till": _ymd(sa.get("till")),
                 "odds": a.get("odds") or [],
             })
         if len(doc["data"]) < 100:
@@ -97,6 +111,56 @@ def fetch_games(http: HttpClient, match_id: str) -> list[dict]:
     return games
 
 
+def _save_meta(conn: sqlite3.Connection, match: dict) -> None:
+    conn.execute(
+        "UPDATE cs_matches SET team1_id=?, team2_id=?, location=?, stage_since=?, stage_till=? WHERE id=?",
+        (match["team1_id"], match["team2_id"], match["location"], match["stage_since"], match["stage_till"], match["id"]),
+    )
+
+
+def save_meta(conn: sqlite3.Connection, match: dict) -> None:
+    """Team ids and tournament location/dates for an already stored match (no extra requests)."""
+    with conn:
+        _save_meta(conn, match)
+
+
+def fetch_team(http: HttpClient, team_id: str) -> dict:
+    """Team roster history: players with nationality and since/till dates."""
+    doc = http.get_json(f"{API}/teams/{team_id}")
+    inc = _index(doc)
+    countries = {x["attributes"]["code"]: x["attributes"].get("title")
+                 for x in doc.get("included", []) if x["type"] == "country" and x["attributes"].get("code")}
+    players = []
+    for x in doc.get("included", []):
+        if x["type"] != "team_player" or x["attributes"].get("isTotal"):
+            continue
+        p_ref = _ref(x, "player")
+        p = inc.get(("player", p_ref["id"])) if p_ref else None
+        players.append({
+            "player_id": p_ref["id"] if p_ref else None,
+            "nickname": p["attributes"].get("nickname") if p else None,
+            "country_code": p["attributes"].get("countryCode") if p else None,
+            "status": x["attributes"].get("status"),
+            "since": x["attributes"].get("since") or "",
+            "till": x["attributes"].get("till"),
+        })
+    return {"id": team_id, "title": doc["data"]["attributes"].get("title"), "players": players, "countries": countries}
+
+
+def save_team(conn: sqlite3.Connection, team: dict) -> None:
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO cs_teams (id, title, fetched_at) VALUES (?,?,?)",
+                     (team["id"], team["title"], dt.datetime.now(dt.timezone.utc).isoformat()))
+        conn.execute("DELETE FROM cs_team_players WHERE team_id=?", (team["id"],))
+        conn.executemany(
+            """INSERT OR REPLACE INTO cs_team_players (team_id, player_id, nickname, country_code, status, since, till)
+               VALUES (?,?,?,?,?,?,?)""",
+            [(team["id"], p["player_id"], p["nickname"], p["country_code"], p["status"], p["since"], p["till"])
+             for p in team["players"] if p["player_id"]],
+        )
+        conn.executemany("INSERT OR REPLACE INTO cs_countries (code, title) VALUES (?,?)", team["countries"].items())
+
+
 def save_match(conn: sqlite3.Connection, match: dict, stats: dict | None, games: list[dict]) -> None:
     stats_team = {}
     external_id = begin_at = None
@@ -130,6 +194,7 @@ def save_match(conn: sqlite3.Connection, match: dict, stats: dict | None, games:
              stats_team.get("team1"), stats_team.get("team2"), begin_at, json.dumps(match["odds"], ensure_ascii=False),
              "done" if stats else "none", dt.datetime.now(dt.timezone.utc).isoformat()),
         )
+        _save_meta(conn, match)
         for g in games:
             rounds = rounds_by_game.get(g["id"], [])
             conn.execute(
