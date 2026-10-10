@@ -32,5 +32,5 @@ jobs:
             cd ~/polymarket
             git pull --ff-only
             docker compose up -d --build
-            docker image prune -f
+            docker image prune -f --filter label=app=polymarket-paper-bot
             docker compose ps

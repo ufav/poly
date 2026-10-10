@@ -76,7 +76,7 @@ docs/                     CJM, архитектура, бэклог
 
 ### Автодеплой (GitHub Actions, `.github/workflows/deploy.yml`)
 
-Push в `main` с изменениями в `pmbot/`, `scripts/`, `Dockerfile`, `docker-compose.yml`, `requirements.txt` → SSH на сервер → `git pull --ff-only && docker compose up -d --build`. Правки только `docs/` и `analysis/` бота не перезапускают. Ручной запуск — вкладка Actions → «deploy paper bot» → Run workflow.
+Push в `main` с изменениями в `pmbot/`, `scripts/`, `Dockerfile`, `docker-compose.yml`, `requirements.txt` → SSH на сервер → `git pull --ff-only && docker compose up -d --build`. Правки только `docs/` и `analysis/` бота не перезапускают. Другие приложения на сервере не затрагиваются: работа только в `~/polymarket`, проект compose `polymarket`, портов нет, чистятся только старые образы с меткой `app=polymarket-paper-bot`. Ручной запуск — вкладка Actions → «deploy paper bot» → Run workflow.
 
 Секреты репозитория (Settings → Secrets and variables → Actions): `SSH_HOST`, `SSH_USER`, `SSH_KEY` (приватный ключ отдельной пары только для деплоя), `SSH_PORT` (если не 22). Пара создаётся на сервере: `ssh-keygen -t ed25519 -f ~/.ssh/gh_deploy -N "" -C gh-actions && cat ~/.ssh/gh_deploy.pub >> ~/.ssh/authorized_keys`; содержимое `~/.ssh/gh_deploy` → `SSH_KEY`.
 
