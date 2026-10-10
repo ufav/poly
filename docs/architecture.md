@@ -65,11 +65,11 @@ docs/                     CJM, архитектура, бэклог
 
 ### Деплой (Linux + Docker)
 
-1. Скопировать проект на сервер без `data/` и `.env`, например: `scp -r pmbot scripts requirements.txt Dockerfile docker-compose.yml .dockerignore user@server:~/polymarket/`.
+1. `git clone https://github.com/ufav/poly.git ~/polymarket` (`.env` и `data/` в репозиторий не попадают).
 2. На сервере создать `~/polymarket/.env` только с переменными бота (`TELEGRAM_*`, `PAPER_*` из `.env.example`) — **приватный ключ на сервер не класть**.
 3. Telegram: создать бота у @BotFather → `TELEGRAM_BOT_TOKEN`; написать боту любое сообщение, открыть `https://api.telegram.org/bot<TOKEN>/getUpdates` → `chat.id` → `TELEGRAM_CHAT_ID`.
 4. `cd ~/polymarket && docker compose up -d --build`; логи — `docker compose logs -f`; отчёт — `docker compose exec paper-bot python scripts/paper_report.py`.
-5. Обновление: скопировать новые файлы и `docker compose up -d --build`. Данные лежат в `~/polymarket/data` (том), переживают перезапуск.
+5. Обновление: `git pull && docker compose up -d --build`. Данные лежат в `~/polymarket/data` (том), переживают перезапуск.
 
 ## Источники данных
 
