@@ -127,17 +127,20 @@ def main() -> None:
         base[1] += m["winner"] == fav_team
         dog = m["first_t"] if fav_team == m["first_ct"] else m["first_ct"]
         deficit = m["half"].get(dog, 0) - m["half"].get(fav_team, 0)
-        if deficit > 0 and dog == m["first_ct"]:
-            for key in ("ALL", m["map"]):
+        if deficit > 0:
+            dog_side = "CT" if dog == m["first_ct"] else "T"
+            won = m["winner"] == fav_team
+            for key in (f"dog {dog_side} / ALL", f"dog {dog_side} / deficit {min(deficit, 8)}{'+' if deficit >= 8 else ''}",
+                        f"dog {dog_side} / map {m['map'] or '?'}"):
                 scen[key][0] += 1
-                scen[key][1] += m["winner"] == fav_team
-            bucket = "deficit 1-2" if deficit <= 2 else "deficit 3-4" if deficit <= 4 else "deficit 5+"
-            scen[bucket][0] += 1
-            scen[bucket][1] += m["winner"] == fav_team
+                scen[key][1] += won
     print(f"   maps joined to Polymarket with a clear favorite: {joined}; favorite map win rate overall: "
           f"{base[1] / max(base[0], 1):.1%} (n={base[0]})")
-    for key, (n, w) in sorted(scen.items(), key=lambda kv: (kv[0] != "ALL", not kv[0].startswith("deficit"), -kv[1][0])):
-        print(f"   {str(key):12} favorite won {w / n:6.1%}  (n={n})")
+    print("   favorite trails after 12 rounds; 'dog CT' = underdog played CT in the first half (favorite gets CT next)")
+    for key, (n, w) in sorted(scen.items(), key=lambda kv: (kv[0].split(" / ")[1].startswith("map"), kv[0])):
+        if n >= 10:
+            se2 = 2 * (w / n * (1 - w / n) / n) ** 0.5
+            print(f"   {key:28} favorite won {w / n:6.1%} ±{se2:5.1%}  (n={n})")
 
 
 if __name__ == "__main__":
