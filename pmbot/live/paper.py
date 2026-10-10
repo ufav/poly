@@ -1,7 +1,7 @@
 """Paper trading: rules evaluated on live score, fills simulated on the real order book, settlement from Gamma.
 
-Rules are hypotheses to test, not proven strategies (see docs/research.md). All fire once per map at halftime
-(12-13 rounds played; MR12, one missed WebSocket update tolerated).
+Rules are hypotheses to test, not proven strategies (see docs/research.md). Each fires at most once per map:
+halftime rules at 12-13 rounds played (MR12, one missed WebSocket update tolerated), late rules in the 2nd half.
 """
 
 import json
@@ -53,11 +53,23 @@ def leader(min_lead: int):
     return rule
 
 
+def leader_late(min_lead: int, min_rounds: int):
+    """2nd half of regulation: leader with >= min_rounds won and lead >= min_lead (R-12)."""
+    def rule(s: MapState) -> str | None:
+        if not 13 <= s.total <= 24:
+            return None
+        top = max(s.rounds, key=s.rounds.get)
+        lead = s.rounds[top] - s.rounds[s.other(top)]
+        return top if min_rounds <= s.rounds[top] < 13 and lead >= min_lead else None
+    return rule
+
+
 RULES = {
     "fav_comeback_half": fav_comeback(0.70, range(2, 5)),
     "fav_comeback_wide": fav_comeback(0.60, range(2, 7)),
     "leader_half": leader(4),
     "leader_half6": leader(6),
+    "leader_late": leader_late(5, 11),
 }
 
 

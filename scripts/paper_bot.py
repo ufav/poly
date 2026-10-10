@@ -7,7 +7,7 @@
 - settlement from Gamma, Telegram notifications, daily summary;
 - daily cybersport.ru collection (first-half sides / rounds for later analysis).
 
-Env (all optional): PAPER_STAKE_USD=100, PAPER_RULES=fav_comeback_half,fav_comeback_wide,leader_half,leader_half6,
+Env (all optional): PAPER_STAKE_USD=100, PAPER_RULES=fav_comeback_half,fav_comeback_wide,leader_half,leader_half6,leader_late,
 BOOK_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
   python scripts/paper_bot.py
@@ -134,7 +134,7 @@ class Bot:
         if not teams or map_number < 1:
             return
         (r_home, r_away), (m_home, m_away) = parsed
-        if not paper.HALF_ROUNDS[0] <= r_home + r_away <= paper.HALF_ROUNDS[1]:
+        if r_home + r_away < paper.HALF_ROUNDS[0]:
             return
         prematch = await self.get_prematch(gid, game)
         if not prematch:
@@ -165,13 +165,15 @@ class Bot:
         fill = paper.simulate_fill(book["asks"], self.stake)
         status = "open" if fill["shares"] > 0 else "unfilled"
         with self.conn:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """INSERT OR IGNORE INTO paper_trades (strategy, game_id, event_id, market_id, token_id, outcome, map_number,
                        signal_t, state, stake, shares, avg_price, best_ask, fee, filled, status)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (rule, gid, game["event_id"], market["market_id"], token, team, s.map_number, time.time(),
                  json.dumps(state, ensure_ascii=False), self.stake, fill["shares"], fill["avg_price"], book["ask"],
                  fill["fee"], fill["filled"], status))
+        if cur.rowcount == 0:  # already traded before a restart
+            return
         score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
         fav = max(s.prematch, key=s.prematch.get)
         if status == "unfilled":
@@ -179,7 +181,7 @@ class Bot:
         else:
             result = (f"Покупка (бумажная): {team} по {fill['avg_price']:.3f} (лучший ask {book['ask']}), "
                       f"исполнено {fill['filled']:.0%} от {self.stake:.0f}$")
-        self.tg.send(f"📝 {rule}\n{game['title']}\nКарта {s.map_number}, перерыв: {score}\n"
+        self.tg.send(f"📝 {rule}\n{game['title']}\nКарта {s.map_number}, счёт: {score}\n"
                      f"Фаворит до матча: {fav} {s.prematch[fav]:.2f}\n{result}")
 
     # ---------- order books ----------
