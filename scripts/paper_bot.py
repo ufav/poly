@@ -7,7 +7,7 @@
 - settlement from Gamma, Telegram notifications, daily summary;
 - daily cybersport.ru collection (first-half sides / rounds for later analysis).
 
-Env (all optional): PAPER_STAKE_USD=100, PAPER_RULES=fav_comeback_half,fav_comeback_wide,leader_half,
+Env (all optional): PAPER_STAKE_USD=100, PAPER_RULES=fav_comeback_half,fav_comeback_wide,leader_half,leader_half6,
 BOOK_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
   python scripts/paper_bot.py

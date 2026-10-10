@@ -57,6 +57,7 @@ RULES = {
     "fav_comeback_half": fav_comeback(0.70, range(2, 5)),
     "fav_comeback_wide": fav_comeback(0.60, range(2, 7)),
     "leader_half": leader(4),
+    "leader_half6": leader(6),
 }
 
 

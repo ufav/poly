@@ -112,6 +112,25 @@ CREATE TABLE IF NOT EXISTS cs_team_players (
     PRIMARY KEY (team_id, player_id, since)
 ) WITHOUT ROWID;
 
+-- PandaScore map timing; match_id = pm_events.game_id, position = map number
+CREATE TABLE IF NOT EXISTS ps_games (
+    match_id   INTEGER,
+    position   INTEGER,
+    game_id    INTEGER,
+    status     TEXT,
+    begin_at   TEXT,
+    end_at     TEXT,
+    length     INTEGER,
+    winner_id  INTEGER,
+    PRIMARY KEY (match_id, position)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS ps_matches (
+    match_id    INTEGER PRIMARY KEY,
+    status      TEXT,
+    fetched_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS cs_countries (
     code   TEXT PRIMARY KEY,
     title  TEXT

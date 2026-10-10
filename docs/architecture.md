@@ -10,7 +10,8 @@ pmbot/                    пакет с переиспользуемым код�
   cybersport.py           cybersport.ru: матчи CS2, карты, раунды, составы команд
   join.py                 связка cybersport ↔ Polymarket (external_id, иначе имена + дата ±1 день)
   geo.py                  часовые пояса: дом команды (страны игроков) и город турнира
-  maptiming.py            оценка начала/конца карты и момента перерыва по траектории цены
+  pandascore.py           PandaScore REST: начало/конец каждой карты (бесплатный тариф)
+  maptiming.py            оценка начала/конца карты по траектории цены (смещена, см. R-6; есть PandaScore)
   telegram.py             уведомления (выключены без TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
   live/                   бот-регистратор и бумажная торговля
     feeds.py              sports WebSocket (счёт), Gamma (матчи, рынки, расчёт), CLOB /book
@@ -22,6 +23,7 @@ scripts/
   collect_polymarket.py   сбор истории Polymarket за период (повторный запуск докачивает)
   collect_cybersport.py   сбор матчей/карт/раундов cybersport.ru по дням (повторный запуск докачивает)
   collect_cs_teams.py     составы команд с датами и национальностью игроков
+  collect_pandascore.py   время карт PandaScore для всех матчей Polymarket (нужен PANDASCORE_ACCESS_TOKEN)
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков
   paper_bot.py            бот: регистратор live-матчей + бумажные сделки (запускается в Docker)
@@ -46,6 +48,7 @@ docs/                     CJM, архитектура, бэклог
 - `cs_games` — карты матча по порядку: название карты, счёт (`score1/score2` в порядке команд сайта), число раундов.
 - `cs_rounds` — раунд: команда на CT, команда на T, победившая сторона и команда, исход (`eliminated`/`exploded`/`defused`/...). Имена команд — как в Polymarket.
 - В `cs_matches` также: `team1_id/team2_id` (id команд cybersport), `location` турнира («Город, Страна»; пусто — онлайн), `stage_since/stage_till` — даты турнира.
+- `ps_games` — карта по PandaScore: `match_id` (= `pm_events.game_id`), `position` (номер карты), `begin_at`, `end_at`, `length` (с), победитель. `ps_matches` — статус матча и время загрузки (`missing` — нет в PandaScore).
 - `cs_teams`, `cs_team_players` — составы: игрок, страна (`country_code`), статус (`player`/`substitute`/`coach`), `since/till`. `cs_countries` — код страны ↔ русское название (для разбора `location`).
 
 Связка с Polymarket (`pmbot/join.py`): точная по `external_id`, иначе по нормализованным именам команд и дате ±1 день; синонимы имён («FaZe Clan» ↔ «FaZe») выучиваются из точных связок. На 880 точных связках: 876 совпадений, 0 ошибок.
@@ -84,6 +87,7 @@ docs/                     CJM, архитектура, бэклог
 | cybersport.ru `/api/matches/<id>` | Карты матча: название, счёт, id для связки с раундами | ~260 КБ на матч, `include` игнорируется |
 | cybersport.ru `/api/teams/<id>` | История состава: игроки, страна, даты прихода/ухода; статистика команды по картам | Страна игрока ≠ место жительства команды (буткемпы) |
 | cybersport.ru `/api/v1/match-stats/csgo?filter[internalId]=<id>` | Раунды: CT/T, победившая сторона и команда, исход раунда; статистика игроков | Есть примерно у 40% матчей; лайв не подтверждён |
+| PandaScore `api.pandascore.co/csgo/matches?filter[id]=…` | Матч по `gameId` Polymarket (id совпадают): карты с `begin_at`/`end_at`/`length`/победителем; до 100 матчей за запрос | Бесплатно: только списки, 1000 запросов/ч; `/matches/{id}`, `/games/{id}`, раунды — 403; live-WS — 4003 «Unsufficient permission» (платно) |
 | GRID Open Access | Официальные данные CS2, раунды, стороны, история | Нужна заявка; 10 запросов/мин |
 
 `gameId` Polymarket = `externalId` в match-stats cybersport.ru (проверено на 6 из 6 матчей, имена команд совпадают; вероятно, оба берут данные у PandaScore) — ключ для связки матчей.

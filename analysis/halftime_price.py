@@ -31,15 +31,28 @@ def load_rounds(conn, game_id: str) -> list[tuple]:
         (game_id,)).fetchall()
 
 
-def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None) -> tuple[list[dict], list[float]]:
+def _ts(iso: str) -> int:
+    return int(dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+
+
+def ps_windows(conn, game_id) -> dict[int, tuple[int, int]]:
+    return {pos: (_ts(b), _ts(e)) for pos, b, e in conn.execute(
+        "SELECT position, begin_at, end_at FROM ps_games WHERE match_id = ? AND begin_at IS NOT NULL "
+        "AND end_at IS NOT NULL", (game_id,))}
+
+
+def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None,
+            timing: str = "pandascore") -> tuple[list[dict], list[float]]:
     """Halftime rows per team; if `windows` is given, also appends every timed map:
-    {"path": [(t, price of first-half CT team)], "t0", "t1", "rounds", "ct_won", "date"}."""
+    {"path": [(t, price of first-half CT team)], "t0", "t1", "rounds", "ct_won", "date"}.
+    timing: "pandascore" = true map begin/end (ps_games); "price" = estimated from the price path (look-ahead biased)."""
     rows = []
     per_round = []
     matches = conn.execute(
-        """SELECT c.id, e.id, e.start_time, e.best_of, e.tournament FROM cs_matches c
+        """SELECT c.id, e.id, e.start_time, e.best_of, e.tournament, e.game_id FROM cs_matches c
            JOIN pm_events e ON e.game_id = c.external_id WHERE c.stats_status = 'done'""").fetchall()
-    for cs_id, event_id, start_time, best_of, tournament in matches:
+    for cs_id, event_id, start_time, best_of, tournament, pm_game_id in matches:
+        ps = ps_windows(conn, pm_game_id) if timing == "pandascore" else {}
         markets = {}
         moneyline = None
         for mtype, num, token, outcome_a in conn.execute(
@@ -83,8 +96,10 @@ def collect(conn, entry_delays: tuple[int, ...], windows: list | None = None) ->
             a_won = norm_team(outcome_a) == norm_team(winner)
             if not a_won and norm_team(outcome_a) not in (norm_team(first_ct), norm_team(first_t)):
                 break
-            window = map_window(series, lower, a_won)
+            window = ps.get(number) if timing == "pandascore" else map_window(series, lower, a_won)
             if not window:
+                if timing == "pandascore":
+                    continue
                 break
             t0, t1 = window
             lower = t1
@@ -173,16 +188,18 @@ def main() -> None:
     ap.add_argument("--fav", type=float, default=0.70)
     ap.add_argument("--entry-delay", type=int, default=60, help="seconds after estimated end of round 12")
     ap.add_argument("--slippage", type=float, default=0.01)
+    ap.add_argument("--timing", choices=("pandascore", "price"), default="pandascore",
+                    help="map begin/end: PandaScore (true) or estimated from the price path (biased)")
     args = ap.parse_args()
-    delays = (-120, args.entry_delay, 180)
+    delays = tuple(sorted({-120, args.entry_delay, 180, 300}))
     conn = storage.connect()
-    rows, per_round = collect(conn, delays)
+    rows, per_round = collect(conn, delays, timing=args.timing)
     d = args.entry_delay
 
-    print(f"maps with estimated timing: {len(per_round)}; median {median(per_round):.2f} min/round; "
+    print(f"timing: {args.timing}; maps timed: {len(per_round)}; median {median(per_round):.2f} min/round; "
           f"kept {len(rows) // 2} maps with {MIN_PER_ROUND[0]}-{MIN_PER_ROUND[1]} min/round\n")
 
-    print(f"1. Sanity: price of the team leading after 12 rounds (entry = half +{d}s; also -120s / +180s)")
+    print(f"1. Sanity: price of the team leading after 12 rounds (entry = half +{d}s; also -120s / +180s / +300s)")
     by_lead = defaultdict(list)
     for r in rows:
         if r["lead"] > 0:
@@ -190,7 +207,8 @@ def main() -> None:
     for lead, items in sorted(by_lead.items()):
         avg = {x: sum(r["price"][x] for r in items) / len(items) for x in delays}
         print(f"   lead +{lead}{'+' if lead == 8 else ' '} n={len(items):4d}  price at -120s {avg[-120]:.3f}  "
-              f"+{d}s {avg[d]:.3f}  +180s {avg[180]:.3f}  win {sum(r['won'] for r in items) / len(items):.1%}")
+              f"+{d}s {avg[d]:.3f}  +180s {avg[180]:.3f}  +300s {avg[300]:.3f}  "
+              f"win {sum(r['won'] for r in items) / len(items):.1%}")
 
     print("\n2. Leader after 12 rounds: price vs win rate by lead and first-half side")
     for lead in (2, 4, 6):
