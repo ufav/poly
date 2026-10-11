@@ -4,13 +4,15 @@
 - score: Polymarket sports WebSocket, every change stored with arrival time;
 - order book of the current map market every BOOK_INTERVAL s, stored on change;
 - paper trades by pmbot/live/paper.py rules, filled on the real book after 1 s (Polymarket delay);
+- paper maker (tier1): taker tape of the current map market polled every MAKER_INTERVAL s, bid fills simulated;
 - settlement from Gamma, Telegram notifications, daily summary;
 - daily cybersport.ru collection (first-half sides / rounds for later analysis).
 
 Stake = PAPER_STAKE_PCT % of the rule's own virtual bank (PAPER_BANK_USD at the first start + settled P&L).
 
-Env (all optional): PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES=fav_comeback_half,fav_comeback_wide,leader_half,leader_half6,leader_late,
-BOOK_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+Env (all optional): PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default all of
+paper.ALL_RULES), BOOK_INTERVAL=10, MAKER_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3,
+TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
   python scripts/paper_bot.py
 """
@@ -29,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 
+from pmbot import polymarket  # noqa: E402
 from pmbot.http import HttpClient  # noqa: E402
 from pmbot.join import norm_team  # noqa: E402
 from pmbot.live import feeds, paper, report, store  # noqa: E402
@@ -41,13 +44,16 @@ class Bot:
     def __init__(self) -> None:
         self.bank_usd = float(os.getenv("PAPER_BANK_USD", "1000"))
         self.stake_pct = float(os.getenv("PAPER_STAKE_PCT", "2"))
-        names = os.getenv("PAPER_RULES") or ",".join(paper.RULES)
-        self.rules = {n.strip(): paper.RULES[n.strip()] for n in names.split(",") if n.strip() in paper.RULES}
+        names = [n.strip() for n in (os.getenv("PAPER_RULES") or ",".join(sorted(paper.ALL_RULES))).split(",")]
+        self.rules = {n: paper.RULES[n] for n in names if n in paper.RULES}
+        self.band_rules = {n: paper.BAND_RULES[n] for n in names if n in paper.BAND_RULES}
+        self.maker_rules = {n: paper.MAKER_RULES[n] for n in names if n in paper.MAKER_RULES}
         self.book_interval = float(os.getenv("BOOK_INTERVAL", "10"))
+        self.maker_interval = float(os.getenv("MAKER_INTERVAL", "10"))
         self.report_hour = int(os.getenv("REPORT_HOUR_UTC", "18"))
         self.cs_hour = int(os.getenv("CS_COLLECT_HOUR_UTC", "3"))
         self.conn = store.connect()
-        for name in self.rules:
+        for name in self.all_rules:
             store.open_bank(self.conn, name, self.bank_usd)
         self.tg = Telegram()
         self.games: dict[int, dict] = {}        # game_id -> parsed event
@@ -59,6 +65,27 @@ class Bot:
             "SELECT strategy, game_id, map_number FROM paper_trades")}
         self.trade_lock = asyncio.Lock()
         self.http_trade = HttpClient(min_interval=0.1, retries=3, timeout=15)
+
+    @property
+    def all_rules(self) -> list[str]:
+        return [*self.rules, *self.band_rules, *self.maker_rules]
+
+    def live_markets(self) -> list[tuple[int, dict, dict, int, dict]]:
+        """(game id, game, last WS item, map number, market deciding the current map) of every live game."""
+        out = []
+        for gid, item in list(self.live.items()):
+            game = self.games.get(gid)
+            if not game or not item.get("live") or item.get("ended"):
+                continue
+            parsed = paper.parse_score(item.get("score"))
+            try:
+                map_number = int(str(item.get("period") or "").split("/")[0])
+            except ValueError:
+                continue
+            market = paper.map_market(game, map_number, parsed[1] if parsed else (0, 0)) if map_number >= 1 else None
+            if market:
+                out.append((gid, game, item, map_number, market))
+        return out
 
     # ---------- discovery ----------
     async def discovery_loop(self) -> None:
@@ -152,24 +179,56 @@ class Bot:
             if team and (name, gid, map_number) not in self.fired:
                 self.fired.add((name, gid, map_number))
                 await self.open_trade(name, gid, game, state, team, (m_home, m_away))
+        if paper.HALF_ROUNDS[0] <= state.total <= paper.HALF_ROUNDS[1] and paper.is_tier1(game):
+            for name, band in self.band_rules.items():
+                if (name, gid, map_number) not in self.fired:
+                    self.fired.add((name, gid, map_number))
+                    await self.open_band_trade(name, gid, game, state, (m_home, m_away), band)
+
+    async def fetch_book(self, token: str) -> dict | None:
+        async with self.trade_lock:
+            try:
+                return await asyncio.to_thread(feeds.fetch_book, self.http_trade, token)
+            except Exception:
+                log.exception("book fetch failed")
+                return None
 
     async def open_trade(self, rule: str, gid: int, game: dict, s: paper.MapState, team: str,
                          maps_won: tuple[int, int]) -> None:
         market = paper.map_market(game, s.map_number, maps_won)
         token = paper.token_for(market, team) if market else None
-        state = {"rounds": s.rounds, "maps": s.maps, "prematch": s.prematch}
         if not token:
             log.info("%s: no market for %s map %s", rule, game["title"], s.map_number)
             return
         await asyncio.sleep(1)
-        async with self.trade_lock:
-            try:
-                book = await asyncio.to_thread(feeds.fetch_book, self.http_trade, token)
-            except Exception:
-                log.exception("book fetch failed")
-                return
+        book = await self.fetch_book(token)
+        if book:
+            self.paper_buy(rule, gid, game, s, team, market, token, book)
+
+    async def open_band_trade(self, rule: str, gid: int, game: dict, s: paper.MapState, maps_won: tuple[int, int],
+                              band: tuple[float, float]) -> None:
+        """Buy the side whose ask is in the band (no trade if none or both are)."""
+        market = paper.map_market(game, s.map_number, maps_won)
+        if not market:
+            return
+        await asyncio.sleep(1)
+        books = {side: await self.fetch_book(market[f"token_{side}"]) for side in ("a", "b")}
+        picks = [side for side, b in books.items() if b and b["ask"] is not None and band[0] <= b["ask"] <= band[1]]
+        if len(picks) != 1:
+            log.info("%s: %s map %s, no side in %s", rule, game["title"], s.map_number, band)
+            return
+        side = picks[0]
+        self.paper_buy(rule, gid, game, s, market[f"outcome_{side}"], market, market[f"token_{side}"], books[side])
+
+    def stake_for(self, rule: str) -> tuple[float, float]:
+        """(stake, bankroll): PAPER_STAKE_PCT % of the rule's bank."""
         bankroll = store.bank(self.conn, rule) or self.bank_usd
-        stake = round(max(bankroll, 0) * self.stake_pct / 100, 2)
+        return round(max(bankroll, 0) * self.stake_pct / 100, 2), bankroll
+
+    def paper_buy(self, rule: str, gid: int, game: dict, s: paper.MapState, team: str, market: dict, token: str,
+                  book: dict) -> None:
+        state = {"rounds": s.rounds, "maps": s.maps, "prematch": s.prematch}
+        stake, bankroll = self.stake_for(rule)
         if stake < 1:
             log.info("%s: bank %.2f$ exhausted", rule, bankroll)
             return
@@ -204,20 +263,7 @@ class Bot:
     async def books_loop(self) -> None:
         http = HttpClient(min_interval=0.1, retries=3, timeout=15)
         while True:
-            for gid, item in list(self.live.items()):
-                game = self.games.get(gid)
-                if not game or not item.get("live") or item.get("ended"):
-                    continue
-                parsed = paper.parse_score(item.get("score"))
-                period = str(item.get("period") or "")
-                try:
-                    map_number = int(period.split("/")[0])
-                except ValueError:
-                    continue
-                maps_won = parsed[1] if parsed else (0, 0)
-                market = paper.map_market(game, map_number, maps_won) if map_number >= 1 else None
-                if not market:
-                    continue
+            for _, _, _, _, market in self.live_markets():
                 for token in (market["token_a"], market["token_b"]):
                     try:
                         book = await asyncio.to_thread(feeds.fetch_book, http, token)
@@ -229,6 +275,69 @@ class Bot:
                         self.last_book[token] = key
                         store.save_book(self.conn, token, book)
             await asyncio.sleep(self.book_interval)
+
+    # ---------- paper maker ----------
+    async def maker_loop(self) -> None:
+        """Tier1 live map markets: poll the taker tape, fill the paper bid on the favourite (paper.maker_fills)."""
+        if not self.maker_rules:
+            return
+        http = HttpClient(min_interval=0.2, retries=2, timeout=15)
+        quotes: dict[tuple[str, str], paper.MakerQuote] = {}
+        while True:
+            for gid, game, item, map_number, market in self.live_markets():
+                if not paper.is_tier1(game) or not market.get("condition_id"):
+                    continue
+                try:
+                    trades = await asyncio.to_thread(polymarket.fetch_trades, http, market["condition_id"], 1)
+                except Exception as e:
+                    log.warning("trades %s: %r", market["market_id"], e)
+                    continue
+                for rule, band in self.maker_rules.items():
+                    q = quotes.setdefault((rule, market["market_id"]), paper.MakerQuote())
+                    for fav_a, bid, usd in paper.maker_fills(q, trades or [], market["token_a"], *band):
+                        self.maker_fill(rule, gid, game, item, map_number, market, fav_a, bid, usd)
+            await asyncio.sleep(self.maker_interval)
+
+    def maker_fill(self, rule: str, gid: int, game: dict, item: dict, map_number: int, market: dict, fav_a: bool,
+                   bid: float, usd: float) -> None:
+        """One position per map: the first fill opens it (stake = % of bank), later fills on the same side top it up
+        to the stake."""
+        side = "a" if fav_a else "b"
+        token, team = market[f"token_{side}"], market[f"outcome_{side}"]
+        row = self.conn.execute(
+            "SELECT id, token_id, stake, shares, filled, status FROM paper_trades "
+            "WHERE strategy=? AND game_id=? AND map_number=?", (rule, gid, map_number)).fetchone()
+        if row is None:
+            stake, bankroll = self.stake_for(rule)
+            if stake < 1:
+                return
+            take = min(usd, stake)
+            parsed = paper.parse_score(item.get("score"))
+            teams = self.team_names(game, item)
+            state = {"bid": bid}
+            if parsed and teams:
+                state |= {"rounds": dict(zip(teams, parsed[0])), "maps": dict(zip(teams, parsed[1]))}
+            with self.conn:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO paper_trades (strategy, game_id, event_id, market_id, token_id, outcome,
+                           map_number, signal_t, state, stake, shares, avg_price, best_ask, fee, filled, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (rule, gid, game["event_id"], market["market_id"], token, team, map_number, time.time(),
+                     json.dumps(state, ensure_ascii=False), stake, take / bid, bid, None, 0.0, take / stake, "open"))
+            score = " : ".join(f"{t} {n}" for t, n in state.get("rounds", {}).items()) or "?"
+            self.tg.send(f"🧲 {rule}\n{game['title']}\nКарта {map_number}, счёт: {score}\n"
+                         f"Заявка на покупку {team} по {bid:.2f} исполнена на {take:.2f}$ из {stake:.2f}$ "
+                         f"({self.stake_pct:g}% банка {bankroll:.2f}$)")
+            return
+        tid, row_token, stake, shares, filled, status = row
+        spent = stake * (filled or 0)
+        take = min(usd, stake - spent)
+        if status != "open" or row_token != token or take < 0.01:
+            return
+        shares, spent = (shares or 0) + take / bid, spent + take
+        with self.conn:
+            self.conn.execute("UPDATE paper_trades SET shares=?, avg_price=?, filled=? WHERE id=?",
+                              (shares, spent / shares, spent / stake, tid))
 
     # ---------- settlement ----------
     async def settle_loop(self) -> None:
@@ -274,12 +383,12 @@ class Bot:
             await asyncio.sleep(60)
 
     async def run(self) -> None:
-        banks = {n: store.bank(self.conn, n) for n in self.rules}
+        banks = {n: store.bank(self.conn, n) for n in self.all_rules}
         log.info("rules: %s, stake %g%% of bank, telegram %s", banks, self.stake_pct, "on" if self.tg.enabled else "off")
         self.tg.send(f"🤖 Бумажный бот запущен. Ставка {self.stake_pct:g}% от банка правила.\nБанки: "
                      + ", ".join(f"{n} {b:.2f}$" for n, b in banks.items()))
-        await asyncio.gather(self.discovery_loop(), self.ws_loop(), self.books_loop(), self.settle_loop(),
-                             self.daily_loop())
+        await asyncio.gather(self.discovery_loop(), self.ws_loop(), self.books_loop(), self.maker_loop(),
+                             self.settle_loop(), self.daily_loop())
 
 
 def main() -> None:

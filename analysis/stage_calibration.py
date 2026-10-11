@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pmbot import storage  # noqa: E402
+from pmbot.tiers import tier_of  # noqa: E402,F401  (other analysis scripts import it from here)
 
 
 def stage_of(tournament: str | None) -> str:
@@ -27,17 +28,6 @@ def stage_of(tournament: str | None) -> str:
     if any(k in t for k in ("group", "swiss", "stage", "regular", "round robin", "league")):
         return "groups/league"
     return "other"
-
-
-TIER1_KEYWORDS = ("iem", "blast", "esl pro league", "pgl", "major", "esports world cup", "starladder",
-                  "perfect world", "fissure", "betboom dacha", "thunderpick world")
-
-
-def tier_of(tournament: str | None) -> str:
-    t = (tournament or "").lower()
-    if "qualifier" in t:
-        return "tier1-qualifier" if any(k in t for k in TIER1_KEYWORDS) else "other-qualifier"
-    return "tier1" if any(k in t for k in TIER1_KEYWORDS) else "tier2+"
 
 
 def main() -> None:

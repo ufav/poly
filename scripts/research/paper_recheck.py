@@ -24,6 +24,8 @@ def main() -> None:
     for tid, rule, m, state, ask, status in mem.execute(
             "SELECT id, strategy, map_number, state, best_ask, status FROM paper_trades"):
         s = json.loads(state)
+        if "rounds" not in s:  # maker fills without a parsed score
+            continue
         rounds, maps = tuple(s["rounds"].values()), tuple(s["maps"].values())
         if not paper.consistent(m, rounds, maps):
             bad.append((tid, rule, "stale/impossible score", status))

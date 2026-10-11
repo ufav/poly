@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 
 def parse_event(event: dict) -> dict:
-    best_of, _ = _title_parts(event["title"])
+    best_of, tournament = _title_parts(event["title"])
     markets = []
     for m in event.get("markets", []):
         mtype = m.get("sportsMarketType")
@@ -28,12 +28,14 @@ def parse_event(event: dict) -> dict:
         outcomes = json.loads(m.get("outcomes") or "[null, null]")
         tokens = json.loads(m.get("clobTokenIds") or "[null, null]")
         markets.append({
-            "market_id": m["id"], "market_type": mtype, "map_number": int(map_no.group(1)) if map_no else None,
+            "market_id": m["id"], "condition_id": m.get("conditionId"), "market_type": mtype,
+            "map_number": int(map_no.group(1)) if map_no else None,
             "outcome_a": outcomes[0], "outcome_b": outcomes[1], "token_a": tokens[0], "token_b": tokens[1],
         })
     return {
         "game_id": event.get("gameId"), "event_id": event["id"], "slug": event.get("slug"), "title": event["title"],
-        "best_of": best_of, "start_time": event.get("startTime") or event.get("startDate"), "markets": markets,
+        "best_of": best_of, "tournament": tournament, "start_time": event.get("startTime") or event.get("startDate"),
+        "markets": markets,
     }
 
 

@@ -2,12 +2,17 @@
 
 Rules are hypotheses to test, not proven strategies (see docs/research.md). Each fires at most once per map:
 halftime rules at 12-13 rounds played (MR12, one missed WebSocket update tolerated), late rules in the 2nd half.
+Price rules (tier1 only): a taker buy of the side priced in a band at the half, and a paper maker whose bid on the
+favourite is filled from the taker tape (one position per map, up to the stake).
 """
 
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
+from itertools import groupby
 
 from pmbot.join import norm_team
+from pmbot.tiers import tier_of
 
 FEE_RATE = 0.05  # taker fee per share = FEE_RATE * p * (1 - p)
 HALF_ROUNDS = (12, 13)
@@ -74,6 +79,59 @@ RULES = {
 
 # the leader's ask below this means the market disagrees with the feed score (broken feed of minor events)
 MIN_ASK = {"leader_half": 0.55, "leader_half6": 0.60, "leader_late": 0.60}
+
+# price rules, tier1 only (R-14 / R-15: in tier1 live the favourite priced 0.70-0.92 is underpriced by 2-3 pp)
+BAND_RULES = {"fav_band_t1": (0.70, 0.92)}   # taker at the half: buy the side whose ask is in the band
+MAKER_RULES = {"maker_t1": (0.70, 0.92)}     # resting bid on the favourite, filled only when a taker trades through
+ALL_RULES = set(RULES) | set(BAND_RULES) | set(MAKER_RULES)
+
+
+def is_tier1(game: dict) -> bool:
+    return tier_of(game.get("tournament")) == "tier1"
+
+
+@dataclass
+class MakerQuote:
+    """Paper maker state of one market: reference = last traded price of token A (from the taker tape)."""
+    ref: float | None = None
+    ref_t: int = 0
+    primed: bool = False
+    seen: set = field(default_factory=set)
+
+
+def maker_fills(q: MakerQuote, trades: list[dict], token_a: str, lo: float, hi: float,
+                max_age: int = 60) -> list[tuple[bool, float, float]]:
+    """New Data API taker trades -> fills of our bid (fav_is_a, bid, taker notional at our bid).
+
+    Our bid on the side priced in [lo, hi] = reference floored to the cent, re-quoted after every second of tape.
+    Filled only by a taker selling that side below our bid (the level was traded through - queue-proof, as the
+    'strict' rule of analysis/maker_sim.py). The first call only primes the reference (no fills on old tape)."""
+    new = sorted((x for x in trades if _trade_key(x) not in q.seen), key=lambda x: int(x["timestamp"]))
+    fills = []
+    for t, group in groupby(new, key=lambda x: int(x["timestamp"])):
+        group = list(group)
+        q.seen.update(_trade_key(x) for x in group)
+        if q.primed and q.ref is not None and q.ref_t <= t <= q.ref_t + max_age:
+            fav_a = True if lo <= q.ref <= hi else False if lo <= 1 - q.ref <= hi else None
+            if fav_a is not None:
+                bid = math.floor((q.ref if fav_a else 1 - q.ref) * 100 + 1e-9) / 100
+                for x in group:
+                    on_a = x["asset"] == token_a
+                    p_a = float(x["price"]) if on_a else 1 - float(x["price"])
+                    if ((x["side"] == "BUY") == on_a) == fav_a:  # taker buys the favourite: not our side
+                        continue
+                    if (p_a if fav_a else 1 - p_a) < bid - 1e-9:
+                        fills.append((fav_a, bid, float(x["size"]) * bid))
+        if t >= q.ref_t:
+            last = group[-1]
+            q.ref = float(last["price"]) if last["asset"] == token_a else 1 - float(last["price"])
+            q.ref_t = t
+    q.primed = True
+    return fills
+
+
+def _trade_key(x: dict) -> tuple:
+    return x.get("transactionHash"), x["asset"], x["side"], x["price"], x["size"]
 
 
 def consistent(map_number: int, rounds: tuple[int, int], maps: tuple[int, int]) -> bool:
