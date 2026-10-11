@@ -3,6 +3,7 @@
   python scripts/research/paper_bot_smoke.py
 """
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -43,6 +44,29 @@ def main() -> None:
     print(bot.conn.execute("SELECT strategy, outcome, stake, shares, avg_price, filled, status, state FROM paper_trades")
           .fetchall())
     print(report.summary(bot.conn))
+
+    # grouped Telegram messages: two comeback rules on the same half, then their settlement
+    sent = []
+    bot.tg.send = sent.append
+    bot.prematch[1] = {"A": 0.8, "B": 0.2}
+
+    async def fake_book(token):
+        return {"asks": [(0.35, 1000.0)], "ask": 0.35, "bids": [], "bid": None}
+
+    bot.fetch_book = fake_book
+    paper_bot.feeds.fetch_market = lambda http, mid: {
+        "closed": True, "clobTokenIds": '["t1a", "t1b"]', "outcomePrices": '["0", "1"]'}
+    half = {**item, "score": "4-8|0-0|Bo3"}
+
+    async def run():
+        await bot.evaluate(1, half)
+        try:
+            await asyncio.wait_for(bot.settle_loop(), timeout=3)
+        except asyncio.TimeoutError:
+            pass
+
+    asyncio.run(run())
+    print("\n---\n".join(sent))
 
 
 if __name__ == "__main__":

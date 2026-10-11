@@ -174,16 +174,23 @@ class Bot:
             return
         state = paper.MapState(map_number, {teams[0]: r_home, teams[1]: r_away},
                                {teams[0]: m_home, teams[1]: m_away}, prematch)
+        lines = []
         for name, rule in self.rules.items():
             team = rule(state)
             if team and (name, gid, map_number) not in self.fired:
                 self.fired.add((name, gid, map_number))
-                await self.open_trade(name, gid, game, state, team, (m_home, m_away))
+                lines.append(await self.open_trade(name, gid, game, state, team, (m_home, m_away)))
         if paper.HALF_ROUNDS[0] <= state.total <= paper.HALF_ROUNDS[1] and paper.is_tier1(game):
             for name, band in self.band_rules.items():
                 if (name, gid, map_number) not in self.fired:
                     self.fired.add((name, gid, map_number))
-                    await self.open_band_trade(name, gid, game, state, (m_home, m_away), band)
+                    lines.append(await self.open_band_trade(name, gid, game, state, (m_home, m_away), band))
+        lines = [x for x in lines if x]
+        if lines:  # rules firing on the same state -> one message
+            score = " : ".join(f"{t} {n}" for t, n in state.rounds.items())
+            fav = max(state.prematch, key=state.prematch.get)
+            self.tg.send(f"📝 {game['title']}\nКарта {map_number}, счёт: {score}\n"
+                         f"Фаворит до матча: {fav} {state.prematch[fav]:.2f}\n" + "\n".join(lines))
 
     async def fetch_book(self, token: str) -> dict | None:
         async with self.trade_lock:
@@ -194,31 +201,31 @@ class Bot:
                 return None
 
     async def open_trade(self, rule: str, gid: int, game: dict, s: paper.MapState, team: str,
-                         maps_won: tuple[int, int]) -> None:
+                         maps_won: tuple[int, int]) -> str | None:
         market = paper.map_market(game, s.map_number, maps_won)
         token = paper.token_for(market, team) if market else None
         if not token:
             log.info("%s: no market for %s map %s", rule, game["title"], s.map_number)
-            return
+            return None
         await asyncio.sleep(1)
         book = await self.fetch_book(token)
-        if book:
-            self.paper_buy(rule, gid, game, s, team, market, token, book)
+        return self.paper_buy(rule, gid, game, s, team, market, token, book) if book else None
 
     async def open_band_trade(self, rule: str, gid: int, game: dict, s: paper.MapState, maps_won: tuple[int, int],
-                              band: tuple[float, float]) -> None:
+                              band: tuple[float, float]) -> str | None:
         """Buy the side whose ask is in the band (no trade if none or both are)."""
         market = paper.map_market(game, s.map_number, maps_won)
         if not market:
-            return
+            return None
         await asyncio.sleep(1)
         books = {side: await self.fetch_book(market[f"token_{side}"]) for side in ("a", "b")}
         picks = [side for side, b in books.items() if b and b["ask"] is not None and band[0] <= b["ask"] <= band[1]]
         if len(picks) != 1:
             log.info("%s: %s map %s, no side in %s", rule, game["title"], s.map_number, band)
-            return
+            return None
         side = picks[0]
-        self.paper_buy(rule, gid, game, s, market[f"outcome_{side}"], market, market[f"token_{side}"], books[side])
+        return self.paper_buy(rule, gid, game, s, market[f"outcome_{side}"], market, market[f"token_{side}"],
+                              books[side])
 
     def stake_for(self, rule: str) -> tuple[float, float]:
         """(stake, bankroll): PAPER_STAKE_PCT % of the rule's bank."""
@@ -226,12 +233,13 @@ class Bot:
         return round(max(bankroll, 0) * self.stake_pct / 100, 2), bankroll
 
     def paper_buy(self, rule: str, gid: int, game: dict, s: paper.MapState, team: str, market: dict, token: str,
-                  book: dict) -> None:
+                  book: dict) -> str | None:
+        """Record the paper trade; the Telegram line for it (None if nothing new)."""
         state = {"rounds": s.rounds, "maps": s.maps, "prematch": s.prematch}
         stake, bankroll = self.stake_for(rule)
         if stake < 1:
             log.info("%s: bank %.2f$ exhausted", rule, bankroll)
-            return
+            return None
         fill = paper.simulate_fill(book["asks"], stake)
         status = "open" if fill["shares"] > 0 else "unfilled"
         if status == "open" and book["ask"] < paper.MIN_ASK.get(rule, 0):
@@ -246,18 +254,13 @@ class Bot:
                  json.dumps(state, ensure_ascii=False), stake, fill["shares"], fill["avg_price"], book["ask"],
                  fill["fee"], fill["filled"], status))
         if cur.rowcount == 0:  # already traded before a restart
-            return
-        score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
-        fav = max(s.prematch, key=s.prematch.get)
+            return None
         if status == "unfilled":
-            result = f"Не исполнено: в стакане {team} нет заявок на продажу"
-        elif status == "rejected":
-            result = f"Пропущено: ask {book['ask']} противоречит счёту (вероятно, сбой фида)"
-        else:
-            result = (f"Покупка (бумажная): {team} по {fill['avg_price']:.3f} (лучший ask {book['ask']}), "
-                      f"исполнено {fill['filled']:.0%} от {stake:.2f}$ ({self.stake_pct:g}% банка {bankroll:.2f}$)")
-        self.tg.send(f"📝 {rule}\n{game['title']}\nКарта {s.map_number}, счёт: {score}\n"
-                     f"Фаворит до матча: {fav} {s.prematch[fav]:.2f}\n{result}")
+            return f"• {rule}: {team} — не исполнено, в стакане нет заявок на продажу"
+        if status == "rejected":
+            return f"• {rule}: {team} — пропущено, ask {book['ask']} противоречит счёту (вероятно, сбой фида)"
+        return (f"• {rule}: покупка {team} по {fill['avg_price']:.3f} (ask {book['ask']}), "
+                f"{fill['filled']:.0%} от {stake:.2f}$ ({self.stake_pct:g}% банка {bankroll:.2f}$)")
 
     # ---------- order books ----------
     async def books_loop(self) -> None:
@@ -346,6 +349,7 @@ class Bot:
             open_trades = self.conn.execute(
                 "SELECT id, strategy, market_id, token_id, outcome, shares, stake, filled, fee, game_id, map_number "
                 "FROM paper_trades WHERE status='open'").fetchall()
+            settled: dict[tuple, list[str]] = {}  # (game, map, team, payout) -> lines: one message per outcome
             for tid, rule, market_id, token, outcome, shares, stake, filled, fee, gid, map_no in open_trades:
                 try:
                     m = await asyncio.to_thread(feeds.fetch_market, http, market_id)
@@ -359,9 +363,11 @@ class Bot:
                 with self.conn:
                     self.conn.execute("UPDATE paper_trades SET status='settled', payout=?, pnl=?, settled_at=? WHERE id=?",
                                       (payout, pnl, time.time(), tid))
+                settled.setdefault((gid, map_no, outcome, payout), []).append(f"• {rule}: P&L {pnl:+.2f}$")
+            for (gid, map_no, outcome, payout), lines in settled.items():
                 title = self.games.get(gid, {}).get("title", gid)
-                self.tg.send(f"{'✅' if payout else '❌'} {rule}\n{title}, карта {map_no}: {outcome} "
-                             f"{'выиграл' if payout else 'проиграл'}\nP&L {pnl:+.2f}$")
+                self.tg.send(f"{'✅' if payout else '❌'} {title}, карта {map_no}: {outcome} "
+                             f"{'выиграл' if payout else 'проиграл'}\n" + "\n".join(lines))
             await asyncio.sleep(120)
 
     # ---------- daily jobs ----------
