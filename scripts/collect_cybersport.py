@@ -50,7 +50,11 @@ def main() -> None:
                     totals["skipped"] += 1
                     continue
                 if dota:
-                    details = cybersport.fetch_details(http, match["id"])
+                    try:
+                        details = cybersport.fetch_details(http, match["id"])
+                    except Exception as e:  # one broken match page must not stop the run; retried next time
+                        print(f"match {match['id']}: {e!r}", flush=True)
+                        continue
                     cybersport.save_match(conn, match, None, details["games"])
                     cybersport.save_details(conn, match["id"], details)
                     day_stats["matches"] += 1

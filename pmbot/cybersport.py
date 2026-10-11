@@ -119,7 +119,8 @@ def fetch_details(http: HttpClient, match_id: str) -> dict:
                 "side": side, "team_id": team_ref["id"] if team_ref else None, "player_id": p["id"],
                 "nickname": p["attributes"].get("nickname"), "country_code": p["attributes"].get("countryCode"),
                 "steam_id": ext["attributes"].get("externalId") if ext else None,
-                "status": tp["attributes"].get("status"), "position": tp["attributes"].get("position"),
+                "status": (tp.get("attributes") or {}).get("status"),
+                "position": (tp.get("attributes") or {}).get("position"),
             })
     stage_ref, bracket_ref = _ref(doc["data"], "stage"), _ref(doc["data"], "bracket")
     stage = inc.get((stage_ref["type"], stage_ref["id"])) if stage_ref else None
@@ -128,13 +129,14 @@ def fetch_details(http: HttpClient, match_id: str) -> dict:
     for rel in _ROUND_RELS:
         ref = _ref(doc["data"], rel)
         obj = inc.get((ref["type"], ref["id"])) if ref else None
-        if obj:
-            round_name = obj["attributes"].get("name") or obj["attributes"].get("title")
+        attrs = (obj or {}).get("attributes") or {}
+        if attrs.get("name") or attrs.get("title"):
+            round_name = attrs.get("name") or attrs.get("title")
             break
     return {
         "games": _games(doc), "players": players,
-        "prize_pool": (stage or {}).get("attributes", {}).get("prizePool"),
-        "bracket": (bracket or {}).get("attributes", {}).get("name"), "round_name": round_name,
+        "prize_pool": ((stage or {}).get("attributes") or {}).get("prizePool"),
+        "bracket": ((bracket or {}).get("attributes") or {}).get("name"), "round_name": round_name,
     }
 
 
