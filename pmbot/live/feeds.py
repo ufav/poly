@@ -24,7 +24,7 @@ def parse_event(event: dict) -> dict:
         mtype = m.get("sportsMarketType")
         if mtype not in ("moneyline", "child_moneyline"):
             continue
-        map_no = re.match(r"Map (\d+)", m.get("groupItemTitle") or "")
+        map_no = re.match(r"(?:Map|Game) (\d+)", m.get("groupItemTitle") or "")
         outcomes = json.loads(m.get("outcomes") or "[null, null]")
         tokens = json.loads(m.get("clobTokenIds") or "[null, null]")
         markets.append({

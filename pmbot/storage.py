@@ -2,6 +2,12 @@ import sqlite3
 from pathlib import Path
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "data" / "cs2.sqlite"
+SPORTS = ("cs2", "dota2")
+
+
+def db_path(sport: str = "cs2") -> Path:
+    """One database per game, same schema (CS2 analysis assumes its base holds only CS2)."""
+    return DEFAULT_DB.with_name(f"{sport}.sqlite")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pm_events (

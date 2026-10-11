@@ -7,7 +7,7 @@ trades of one market share one outcome.
 
 If heavy favourites are underpriced everywhere, the R-8 / R-12 edges are just this bias, not the match state.
 
-  python analysis/trade_calibration.py [--min-usd 0]
+  python analysis/trade_calibration.py [--min-usd 0] [--sport dota2]
 """
 
 import argparse
@@ -20,9 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pmbot import storage  # noqa: E402
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from stage_calibration import tier_of  # noqa: E402
+from pmbot.tiers import tier_of  # noqa: E402
 
 SEGMENTS = ("all", "tier1", "not tier1", "volume >= $200k", "volume < $200k")
 
@@ -41,8 +39,9 @@ def bucket(p: float) -> int | None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-usd", type=float, default=0.0, help="ignore trades smaller than this notional")
+    ap.add_argument("--sport", choices=storage.SPORTS, default="cs2")
     args = ap.parse_args()
-    conn = storage.connect()
+    conn = storage.connect(storage.db_path(args.sport))
     markets = conn.execute(
         """SELECT m.condition_id, m.token_a, m.token_b, m.final_price_a, e.start_time, m.volume, e.tournament
            FROM pm_markets m JOIN pm_events e ON e.id = m.event_id
@@ -59,7 +58,7 @@ def main() -> None:
         except (AttributeError, ValueError):
             continue
         a_won = final_a >= 0.99
-        segments = ("all", "tier1" if tier_of(tournament or "") == "tier1" else "not tier1",
+        segments = ("all", "tier1" if tier_of(tournament, args.sport) == "tier1" else "not tier1",
                     "volume >= $200k" if (volume or 0) >= 200_000 else "volume < $200k")
         for t, asset, side, price, size in conn.execute(
                 "SELECT t, asset, side, price, size FROM pm_trades WHERE condition_id = ?", (cond,)):

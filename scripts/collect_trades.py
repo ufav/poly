@@ -3,7 +3,7 @@
 Default scope: events linked to cybersport matches with rounds (the samples of R-8 / R-12) plus all BO3 events
 (R-13) with --all. Re-running is safe (markets with trades_status set are skipped).
 
-  python scripts/collect_trades.py [--all] [--limit N]
+  python scripts/collect_trades.py [--all] [--limit N] [--sport dota2]
 """
 
 import argparse
@@ -20,9 +20,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--all", action="store_true", help="all CS2 events, not only those with round data")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--sport", choices=storage.SPORTS, default="cs2", help="dota2: always all events")
     args = ap.parse_args()
-    conn = storage.connect()
-    scope = "" if args.all else (
+    conn = storage.connect(storage.db_path(args.sport))
+    scope = "" if args.all or args.sport != "cs2" else (
         "AND e.game_id IN (SELECT external_id FROM cs_matches WHERE stats_status = 'done' AND external_id IS NOT NULL)")
     rows = conn.execute(
         f"""SELECT m.id, m.condition_id FROM pm_markets m JOIN pm_events e ON e.id = m.event_id

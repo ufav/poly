@@ -1,4 +1,4 @@
-"""Collect closed Polymarket CS2 events, markets and minute price history into SQLite.
+"""Collect closed Polymarket events (CS2 or Dota 2), markets and minute price history into SQLite.
 
 Re-running is safe: events are upserted, price history is fetched only for markets still 'pending'.
 
@@ -6,6 +6,7 @@ Examples:
   python scripts/collect_polymarket.py --since 2025-09-01
   python scripts/collect_polymarket.py --since 2026-10-01 --until 2026-10-08
   python scripts/collect_polymarket.py --histories-only
+  python scripts/collect_polymarket.py --sport dota2 --no-histories     # -> data/dota2.sqlite
 """
 
 import argparse
@@ -25,6 +26,8 @@ def main() -> None:
     parser.add_argument("--until", default=None, help="event creation date to (UTC, YYYY-MM-DD), default now")
     parser.add_argument("--histories-only", action="store_true", help="skip event listing, only fetch pending histories")
     parser.add_argument("--history-limit", type=int, default=None)
+    parser.add_argument("--sport", choices=storage.SPORTS, default="cs2", help="game; own database data/<sport>.sqlite")
+    parser.add_argument("--no-histories", action="store_true", help="only events and markets")
     args = parser.parse_args()
 
     since = dt.datetime.fromisoformat(args.since).replace(tzinfo=dt.timezone.utc)
@@ -32,11 +35,11 @@ def main() -> None:
              if args.until else dt.datetime.now(dt.timezone.utc))
 
     http = HttpClient()
-    conn = storage.connect()
+    conn = storage.connect(storage.db_path(args.sport))
     try:
         if not args.histories_only:
             n = 0
-            for event in polymarket.iter_closed_events(http, since, until):
+            for event in polymarket.iter_closed_events(http, since, until, series_id=polymarket.SERIES[args.sport]):
                 polymarket.save_event(conn, event)
                 n += 1
                 if n % 200 == 0:
@@ -45,8 +48,9 @@ def main() -> None:
             conn.commit()
             print(f"events saved: {n}", flush=True)
 
-        done = polymarket.collect_pending_histories(http, conn, args.history_limit)
-        print(f"histories processed: {done}", flush=True)
+        if not args.no_histories:
+            done = polymarket.collect_pending_histories(http, conn, args.history_limit)
+            print(f"histories processed: {done}", flush=True)
 
         stats = conn.execute(
             """SELECT (SELECT COUNT(*) FROM pm_events), (SELECT COUNT(*) FROM pm_markets),

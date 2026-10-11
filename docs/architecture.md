@@ -34,6 +34,7 @@ scripts/
 analysis/                 проверки гипотез (результаты — docs/research.md)
 data/
   cs2.sqlite              основная база
+  dota2.sqlite            Dota 2: та же схема (`storage.db_path("dota2")`; сборщики и анализ — `--sport dota2`)
   live/                   записи живых матчей (jsonl)
 docs/                     CJM, архитектура, бэклог
 ```

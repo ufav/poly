@@ -10,7 +10,7 @@ Each fill = one flat-stake bet on F at our bid, no fee (makers pay none). Error:
 match markets of one match share outcomes). Also reported: $ we could have filled per event with an order of
 --size $ (capped by the taker trade), and an early / late split by event start.
 
-  python analysis/maker_sim.py [--lo 0.70 --hi 0.92 --max-age 60 --size 50]
+  python analysis/maker_sim.py [--lo 0.70 --hi 0.92 --max-age 60 --size 50] [--sport dota2]
 """
 
 import argparse
@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pmbot import storage  # noqa: E402
-from stage_calibration import tier_of  # noqa: E402
+from pmbot.tiers import tier_of  # noqa: E402
 
 DELTAS = (0.0, 0.01, 0.02)
 RULES = ("strict", "touch")
@@ -39,8 +39,9 @@ def main() -> None:
     ap.add_argument("--hi", type=float, default=0.92)
     ap.add_argument("--max-age", type=int, default=60, help="reference trade not older than this, s")
     ap.add_argument("--size", type=float, default=50.0, help="our order size, $")
+    ap.add_argument("--sport", choices=storage.SPORTS, default="cs2")
     args = ap.parse_args()
-    conn = storage.connect()
+    conn = storage.connect(storage.db_path(args.sport))
     markets = conn.execute(
         """SELECT m.condition_id, m.token_a, m.final_price_a, e.start_time, e.tournament, e.id
            FROM pm_markets m JOIN pm_events e ON e.id = m.event_id
@@ -56,7 +57,7 @@ def main() -> None:
         except (AttributeError, ValueError):
             continue
         a_won = final_a >= 0.99
-        tier = "tier1" if tier_of(tournament or "") == "tier1" else "not tier1"
+        tier = "tier1" if tier_of(tournament, args.sport) == "tier1" else "not tier1"
         segs = ("all", tier, f"{tier} {'early' if start < split_start else 'late'}")
         ref, ref_t = None, None
         rows = conn.execute("SELECT t, asset, side, price, size FROM pm_trades WHERE condition_id = ? ORDER BY t",

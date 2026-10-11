@@ -10,6 +10,8 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 DATA = "https://data-api.polymarket.com"
 CS2_SERIES_ID = 10310
+DOTA2_SERIES_ID = 10309
+SERIES = {"cs2": CS2_SERIES_ID, "dota2": DOTA2_SERIES_ID}
 TRADES_PAGE = 500
 HISTORY_MARKET_TYPES = {"moneyline", "child_moneyline"}
 HISTORY_BEFORE_START = dt.timedelta(hours=6)
@@ -23,8 +25,9 @@ def parse_ts(value: str | None) -> dt.datetime | None:
 
 
 def iter_closed_events(http: HttpClient, created_from: dt.datetime, created_to: dt.datetime,
-                       step: dt.timedelta = dt.timedelta(days=7)) -> Iterator[dict]:
-    """Closed CS2 events, walking creation-date windows (Gamma offset pagination degrades on deep pages)."""
+                       step: dt.timedelta = dt.timedelta(days=7), series_id: int = CS2_SERIES_ID) -> Iterator[dict]:
+    """Closed events of a series (CS2 by default), walking start-date windows (Gamma offset pagination fails on
+    deep pages)."""
     seen: set[str] = set()
     window_start = created_from
     while window_start < created_to:
@@ -32,7 +35,7 @@ def iter_closed_events(http: HttpClient, created_from: dt.datetime, created_to: 
         offset = 0
         while True:
             page = http.get_json(f"{GAMMA}/events", {
-                "series_id": CS2_SERIES_ID,
+                "series_id": series_id,
                 "closed": "true",
                 "limit": 100,
                 "offset": offset,
@@ -73,7 +76,7 @@ def save_event(conn: sqlite3.Connection, event: dict) -> None:
     )
     for m in event.get("markets", []):
         title = m.get("groupItemTitle") or ""
-        map_no = re.match(r"Map (\d+)", title)
+        map_no = re.match(r"(?:Map|Game) (\d+)", title)
         outcomes = json.loads(m.get("outcomes") or "[null, null]")
         tokens = json.loads(m.get("clobTokenIds") or "[null, null]")
         prices = json.loads(m.get("outcomePrices") or "[null, null]")
