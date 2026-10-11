@@ -62,11 +62,11 @@ docs/                     CJM, архитектура, бэклог
 - поиск матчей: открытые события CS2 в Gamma раз в 60 с → `live_games`, `live_markets`;
 - счёт: sports WebSocket, каждое изменение счёта/карты со временем прихода → `live_scores` (у части матчей раунды «000-000» — данных нет);
 - стакан текущей карты (оба исхода) раз в `BOOK_INTERVAL` с, при изменении → `live_books` (топ-10 уровней);
-- правила (`pmbot/live/paper.py`) в перерыве карты (12–13 раундов) и во второй половине (`leader_late`), каждое не больше раза на карту: сигнал → через 1 с берётся стакан, покупка на `PAPER_STAKE_USD` по заявкам продавцов + комиссия → `paper_trades` (`open` / `unfilled`, если продавцов нет);
+- правила (`pmbot/live/paper.py`) в перерыве карты (12–13 раундов) и во второй половине (`leader_late`), каждое не больше раза на карту: сигнал → через 1 с берётся стакан, покупка на `PAPER_STAKE_PCT` % от виртуального банка правила (`paper_bank`: `PAPER_BANK_USD` при первом запуске правила + P&L рассчитанных с тех пор сделок; удалить строку — начать банк заново) по заявкам продавцов + комиссия → `paper_trades` (`open` / `unfilled`, если продавцов нет);
 - расчёт по закрытию рынка в Gamma раз в 2 мин → `settled`, P&L;
 - Telegram: сигнал, расчёт, итог дня в `REPORT_HOUR_UTC`; в `CS_COLLECT_HOUR_UTC` — сбор cybersport.ru за 2 дня (стороны первой половины для анализа).
 
-База `data/live.sqlite`: `live_games`, `live_markets`, `live_scores`, `live_books`, `paper_trades`.
+База `data/live.sqlite`: `live_games`, `live_markets`, `live_scores`, `live_books`, `paper_trades` (статусы `open` / `settled` / `unfilled` / `rejected` — ask противоречит счёту / `invalid` — помечено вручную, в отчёт не идёт), `paper_bank`.
 
 ### Деплой (Linux + Docker)
 

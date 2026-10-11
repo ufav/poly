@@ -3,6 +3,8 @@
 import sqlite3
 import time
 
+from pmbot.live import store
+
 
 def summary(conn: sqlite3.Connection, since: float | None = None) -> str:
     # 'invalid' = trades on a broken feed score, marked by hand (docs/research.md R-14)
@@ -20,7 +22,9 @@ def summary(conn: sqlite3.Connection, since: float | None = None) -> str:
     for name, n, settled, open_, wins, staked, pnl, avg_price, filled, unfilled in rows:
         settled, open_, wins = settled or 0, open_ or 0, wins or 0
         roi = f"{pnl / staked:+.1%}" if staked else "—"
-        lines.append(f"{name}: сигналов {n} (не исполнено/пропущено {unfilled or 0}, открыто {open_}), рассчитано {settled}, "
+        b = store.bank(conn, name)
+        bank = f" | банк {b:.2f}$" if b is not None else ""
+        lines.append(f"{name}{bank}: сигналов {n} (не исполнено/пропущено {unfilled or 0}, открыто {open_}), рассчитано {settled}, "
                      f"выиграно {wins}, P&L {pnl or 0:+.2f}$ ROI {roi}, ср. цена {avg_price or 0:.3f}, "
                      f"ср. исполнение {(filled or 0):.0%}")
     return "\n".join(lines)

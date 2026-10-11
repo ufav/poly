@@ -80,6 +80,13 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     settled_at  REAL,
     UNIQUE (strategy, game_id, map_number)
 );
+
+-- virtual bankroll per rule: start + P&L of trades settled since started_at (stake = % of it)
+CREATE TABLE IF NOT EXISTS paper_bank (
+    strategy    TEXT PRIMARY KEY,
+    start_usd   REAL,
+    started_at  REAL
+);
 """
 
 
@@ -116,6 +123,21 @@ def save_score(conn: sqlite3.Connection, game_id: int, score: str | None, period
                      (game_id, time.time(), score, period, status))
         conn.execute("UPDATE live_games SET status=?, home=COALESCE(home, ?), away=COALESCE(away, ?) WHERE game_id=?",
                      (status, home, away, game_id))
+
+
+def open_bank(conn: sqlite3.Connection, strategy: str, start_usd: float) -> None:
+    """Start the rule's bankroll now unless it already exists (delete the row to restart)."""
+    with conn:
+        conn.execute("INSERT OR IGNORE INTO paper_bank (strategy, start_usd, started_at) VALUES (?,?,?)",
+                     (strategy, start_usd, time.time()))
+
+
+def bank(conn: sqlite3.Connection, strategy: str) -> float | None:
+    row = conn.execute(
+        """SELECT b.start_usd + COALESCE((SELECT SUM(p.pnl) FROM paper_trades p WHERE p.strategy = b.strategy
+                  AND p.status = 'settled' AND p.signal_t >= b.started_at), 0)
+           FROM paper_bank b WHERE b.strategy = ?""", (strategy,)).fetchone()
+    return row[0] if row else None
 
 
 def save_book(conn: sqlite3.Connection, token: str, book: dict) -> None:

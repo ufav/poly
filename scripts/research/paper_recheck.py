@@ -12,13 +12,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pmbot.live import paper, report  # noqa: E402
+from pmbot.live import paper, report, store  # noqa: E402
 
 
 def main() -> None:
     path = Path(sys.argv[1] if len(sys.argv) > 1 else "data/server_live.sqlite")
     mem = sqlite3.connect(":memory:")
     sqlite3.connect(path).backup(mem)
+    mem.executescript(store.SCHEMA)
     bad = []
     for tid, rule, m, state, ask, status in mem.execute(
             "SELECT id, strategy, map_number, state, best_ask, status FROM paper_trades"):
