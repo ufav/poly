@@ -80,9 +80,10 @@ class Bot:
             if gid is None:
                 continue
             prev = self.last_key.get(gid)
-            if prev and prev[0] and str(item.get("score") or "").startswith("000-000"):
-                # the feed interleaves '000-000' frames for all CS2 games every ~20 s; keep the last real score
-                item = {**item, "score": prev[0]}
+            if (prev and str(item.get("score") or "").startswith("000-000") and item.get("period") == prev[1]
+                    and not item.get("ended")):
+                # the feed interleaves '000-000' frames for all CS2 games every ~20 s; on a new map it is a real reset
+                continue
             key = (item.get("score"), item.get("period"), item.get("status"), item.get("ended"))
             self.live[gid] = item
             if self.last_key.get(gid) == key or gid not in self.games:
@@ -134,7 +135,7 @@ class Bot:
         if not teams or map_number < 1:
             return
         (r_home, r_away), (m_home, m_away) = parsed
-        if r_home + r_away < paper.HALF_ROUNDS[0]:
+        if r_home + r_away < paper.HALF_ROUNDS[0] or not paper.consistent(map_number, (r_home, r_away), (m_home, m_away)):
             return
         prematch = await self.get_prematch(gid, game)
         if not prematch:
@@ -164,6 +165,9 @@ class Bot:
                 return
         fill = paper.simulate_fill(book["asks"], self.stake)
         status = "open" if fill["shares"] > 0 else "unfilled"
+        if status == "open" and book["ask"] < paper.MIN_ASK.get(rule, 0):
+            status = "rejected"
+            fill = {**fill, "shares": 0, "filled": 0, "fee": 0}
         with self.conn:
             cur = self.conn.execute(
                 """INSERT OR IGNORE INTO paper_trades (strategy, game_id, event_id, market_id, token_id, outcome, map_number,
@@ -178,6 +182,8 @@ class Bot:
         fav = max(s.prematch, key=s.prematch.get)
         if status == "unfilled":
             result = f"Не исполнено: в стакане {team} нет заявок на продажу"
+        elif status == "rejected":
+            result = f"Пропущено: ask {book['ask']} противоречит счёту (вероятно, сбой фида)"
         else:
             result = (f"Покупка (бумажная): {team} по {fill['avg_price']:.3f} (лучший ask {book['ask']}), "
                       f"исполнено {fill['filled']:.0%} от {self.stake:.0f}$")

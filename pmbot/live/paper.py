@@ -72,6 +72,19 @@ RULES = {
     "leader_late": leader_late(5, 11),
 }
 
+# the leader's ask below this means the market disagrees with the feed score (broken feed of minor events)
+MIN_ASK = {"leader_half": 0.55, "leader_half6": 0.60, "leader_late": 0.60}
+
+
+def consistent(map_number: int, rounds: tuple[int, int], maps: tuple[int, int]) -> bool:
+    """Feed sanity: the map count matches the period (no score left over from the previous map) and the rounds are
+    a reachable MR12 score (overtime only from 12-12)."""
+    if map_number != sum(maps) + 1:
+        return False
+    if sum(rounds) <= 24:
+        return max(rounds) <= 13
+    return min(rounds) >= 12
+
 
 def parse_score(score: str | None) -> tuple[tuple[int, int], tuple[int, int]] | None:
     """'7-1|0-0|Bo3' -> ((7, 1), (0, 0)) in home-away order; None when rounds are unknown ('000-000')."""

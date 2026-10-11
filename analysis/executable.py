@@ -38,9 +38,32 @@ def buys(conn, row: dict, t: float, window: int) -> list[tuple[int, float, float
     return out
 
 
-def roi(items: list[tuple[float, bool]], slippage: float) -> float:
-    cost = sum(p + slippage + 0.05 * p * (1 - p) for p, _ in items)
-    return (sum(w for _, w in items) - cost) / cost
+def vwap(b: list[tuple[int, float, float]], stake: float) -> float | None:
+    """Average price of the first `stake` dollars of the tape; None if the window traded less."""
+    spent, shares = 0.0, 0.0
+    for _, p, usd in b:
+        take = min(usd, stake - spent)
+        spent += take
+        shares += take / p
+        if spent >= stake - 1e-9:
+            return spent / shares
+    return None
+
+
+def roi(items: list[tuple[float, bool]], slippage: float) -> tuple[float, float]:
+    """Flat-stake ROI and its standard error."""
+    rets = []
+    for p, w in items:
+        cost = p + slippage + 0.05 * p * (1 - p)
+        rets.append((1 if w else 0) / cost - 1)
+    k = len(rets)
+    mean = sum(rets) / k
+    var = sum((x - mean) ** 2 for x in rets) / max(k - 1, 1)
+    return mean, (var / k) ** 0.5
+
+
+def fmt(r: tuple[float, float]) -> str:
+    return f"{r[0]:+.1%}±{r[1]:.1%}"
 
 
 def main() -> None:
@@ -62,30 +85,39 @@ def main() -> None:
             n = len(r["seq_all"])
             signals["R-12 lead>=5, rounds>=11"].append((r, r["t0"] + (r["t1"] - r["t0"]) * e[1] / n + OFFSET, e[0]))
 
+    all_t = sorted(t for items in signals.values() for _, t, _ in items)
+    split_t = all_t[len(all_t) // 2] if all_t else 0
+    groups = {
+        "all": lambda r, t: True,
+        "tier1": lambda r, t: r["tier"] == "tier1",
+        "not tier1": lambda r, t: r["tier"] != "tier1",
+        "1st half": lambda r, t: t < split_t,
+        "2nd half": lambda r, t: t >= split_t,
+    }
     for rule, items in signals.items():
-        print(f"{rule}  (window {args.window}s)")
-        for tier in ("all", "tier1", "not tier1"):
-            sel = [x for x in items if tier == "all" or (x[0]["tier"] == "tier1") == (tier == "tier1")]
+        print(f"{rule}  (window {args.window}s; ROI ± standard error; '$100' = VWAP of the first ${STAKE:.0f} of tape)")
+        tape = [(r, t, p_hist, buys(conn, r, t, args.window)) for r, t, p_hist in items]
+        for name, keep in groups.items():
+            sel = [x for x in tape if keep(x[0], x[1])]
             if len(sel) < 20:
                 continue
-            traded, full, hist_pts, exec_pts, gaps = 0, 0, [], [], []
-            for r, t, p_hist in sel:
-                b = buys(conn, r, t, args.window)
+            hist_pts, first_pts, full_pts, gaps = [], [], [], []
+            for r, t, p_hist, b in sel:
                 if not b:
                     continue
-                traded += 1
-                full += sum(x[2] for x in b) >= STAKE
                 hist_pts.append((p_hist, r["won"]))
-                exec_pts.append((b[0][1], r["won"]))
+                first_pts.append((b[0][1], r["won"]))
                 gaps.append(b[0][1] - p_hist)
-            n = len(sel)
-            line = f"   {tier:9} signals {n:4d}  with a buy trade {traded / n:5.1%}  with >= ${STAKE:.0f} {full / n:5.1%}"
-            if exec_pts:
-                k = len(exec_pts)
-                line += (f" | traded subset n={k}: hist {sum(p for p, _ in hist_pts) / k:.3f} -> trade "
-                         f"{sum(p for p, _ in exec_pts) / k:.3f} (gap {sum(gaps) / k:+.3f}), win "
-                         f"{sum(w for _, w in exec_pts) / k:.1%}, ROI hist {roi(hist_pts, 0.01):+.1%} "
-                         f"-> on trades {roi(exec_pts, 0.0):+.1%}")
+                v = vwap(b, STAKE)
+                if v is not None:
+                    full_pts.append((v, r["won"]))
+            n, k = len(sel), len(first_pts)
+            line = f"   {name:9} signals {n:4d}  traded {k / n:5.1%}  $100 filled {len(full_pts) / n:5.1%}"
+            if k >= 20:
+                line += (f" | gap {sum(gaps) / k:+.3f}  win {sum(w for _, w in first_pts) / k:.1%}  "
+                         f"ROI hist {fmt(roi(hist_pts, 0.01))}  first trade {fmt(roi(first_pts, 0.0))}")
+            if len(full_pts) >= 20:
+                line += f"  $100 {fmt(roi(full_pts, 0.0))}"
             print(line)
         print()
 
