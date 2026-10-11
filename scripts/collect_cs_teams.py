@@ -3,6 +3,7 @@
 Run after collect_cybersport.py; teams already fetched are skipped unless --refresh.
 
   python scripts/collect_cs_teams.py
+  python scripts/collect_cs_teams.py --sport dota2
 """
 
 import argparse
@@ -18,10 +19,11 @@ from pmbot.http import HttpClient  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--sport", choices=storage.SPORTS, default="cs2")
     args = parser.parse_args()
 
     http = HttpClient(min_interval=0.3)
-    conn = storage.connect()
+    conn = storage.connect(storage.db_path(args.sport))
     seen = "" if args.refresh else "AND id NOT IN (SELECT id FROM cs_teams)"
     team_ids = [row[0] for row in conn.execute(f"""
         SELECT id FROM (SELECT team1_id AS id FROM cs_matches UNION SELECT team2_id FROM cs_matches)

@@ -7,10 +7,12 @@ pmbot/                    пакет с переиспользуемым код�
   http.py                 HTTP-клиент: User-Agent, ретраи, пауза между запросами
   storage.py              SQLite-схема и запись
   polymarket.py           Gamma / CLOB / Data API: события, рынки, история цен
-  cybersport.py           cybersport.ru: матчи CS2, карты, раунды, составы команд
+  cybersport.py           cybersport.ru: матчи CS2 / Dota 2, карты, раунды (CS2), составы на матч и история составов
   join.py                 связка cybersport ↔ Polymarket (external_id, иначе имена + дата ±1 день)
   geo.py                  часовые пояса: дом команды (страны игроков) и город турнира
-  pandascore.py           PandaScore REST: начало/конец каждой карты (бесплатный тариф)
+  pandascore.py           PandaScore REST (CS2, Dota 2): время карт, расписание, турнир, команды, составы (бесплатный тариф)
+  opendota.py             OpenDota: игры Dota 2 — драфт, игроки, золото/опыт по минутам, объекты, логи
+  dota_join.py            связка карт Dota: Polymarket (game_id + номер карты) ↔ OpenDota ↔ cybersport
   maptiming.py            оценка начала/конца карты по траектории цены (смещена, см. R-6; есть PandaScore)
   tiers.py                уровень турнира по названию (tier1 / tier2+ / квалификации) — анализ и бот
   telegram.py             уведомления (выключены без TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
@@ -22,10 +24,12 @@ pmbot/                    пакет с переиспользуемым код�
 scripts/
   check_env.py            проверка .env
   collect_polymarket.py   сбор истории Polymarket за период (повторный запуск докачивает)
-  collect_cybersport.py   сбор матчей/карт/раундов cybersport.ru по дням (повторный запуск докачивает)
-  collect_cs_teams.py     составы команд с датами и национальностью игроков
+  collect_cybersport.py   сбор матчей/карт/раундов cybersport.ru по дням (повторный запуск докачивает; --sport dota2)
+  collect_cs_teams.py     составы команд с датами и национальностью игроков (--sport dota2)
   collect_cs_players.py   статистика игроков по картам для уже собранных матчей (новые — в collect_cybersport.py)
-  collect_pandascore.py   время карт PandaScore для всех матчей Polymarket (нужен PANDASCORE_ACCESS_TOKEN)
+  collect_pandascore.py   PandaScore для всех матчей Polymarket (+ все прошлые матчи с --since; нужен PANDASCORE_ACCESS_TOKEN)
+  collect_opendota.py     OpenDota: все лиговые игры Dota 2 (SQL explorer пачками) + недостающие по Steam id cybersport
+  link_dota.py            пересборка dota_map_links
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков
   paper_bot.py            бот: регистратор live-матчей + бумажные сделки (запускается в Docker)
@@ -54,8 +58,19 @@ docs/                     CJM, архитектура, бэклог
 - `cs_player_stats` — игрок на карте (`game_id` = `cs_games.id`): kills, deaths, assists, ADR, KAST, `rating` (**общий рейтинг игрока на момент загрузки, не за карту** — для анализа не использовать). Команда игрока — через `cs_team_players` на дату матча. `cs_player_stats_status` — какие матчи уже загружены.
 - `ps_games` — карта по PandaScore: `match_id` (= `pm_events.game_id`), `position` (номер карты), `begin_at`, `end_at`, `length` (с), победитель. `ps_matches` — статус матча и время загрузки (`missing` — нет в PandaScore).
 - `cs_teams`, `cs_team_players` — составы: игрок, страна (`country_code`), статус (`player`/`substitute`/`coach`), `since/till`. `cs_countries` — код страны ↔ русское название (для разбора `location`).
+- `ps_match_info` — матч PandaScore (обе игры): расписание и переносы (`scheduled_at`, `original_scheduled_at`, `rescheduled`), формат, счёт, команды, турнир; `raw` — весь JSON. `ps_tournaments` — стадия: `type` (online/offline), страна, регион, tier (s/a/b/c/d), призовые, серия, лига. `ps_teams` — `location` (страна команды). `ps_players` — текущий состав на момент загрузки: национальность, роль.
 
 Связка с Polymarket (`pmbot/join.py`): точная по `external_id`, иначе по нормализованным именам команд и дате ±1 день; синонимы имён («FaZe Clan» ↔ «FaZe») выучиваются из точных связок. На 880 точных связках: 876 совпадений, 0 ошибок.
+
+## База `data/dota2.sqlite` (сверх общей схемы)
+
+- `pm_*` — как в CS2 (series 10309); `pm_trades` — сделки (D-15).
+- `cs_matches` / `cs_games` (cybersport, дисциплина 21): `cs_games.external_id` = **Steam id игры** = OpenDota `match_id`; в `cs_matches` также `prize_pool`, `bracket` (стадия), `round_name` (раунд/группа), коэффициенты букмекера. `cs_match_players` — кто реально играл матч: игрок, страна, `steam_id` (= OpenDota `account_id`). `cs_teams` / `cs_team_players` — история составов.
+- `ps_*` — PandaScore: все матчи Dota с 06.2025 (не только Polymarket), карты (`ps_games.length` = OpenDota `duration` до секунды), турниры, команды, игроки.
+- `od_matches` — игра (карта) OpenDota: время, длительность, победитель, лига, серия, команды Radiant/Dire, капитаны, патч, первая кровь, состояние башен/бараков; JSON: `radiant_gold_adv` / `radiant_xp_adv` (по минутам), `objectives` (башни, Рошан, первая кровь, курьеры — со временем), `draft_timings`. `od_picks_bans` — драфт по порядку (`team` 0 = Radiant). `od_players` — 10 игроков: герой, KDA, GPM/XPM, урон, вардов, линия/роль, предметы, `gold_t`/`xp_t`/`lh_t` по минутам. `od_logs` — сжатый JSON (`opendota.load_logs`): тимфайты, по игроку — убийства, покупки, выкупы, руны, варды, прокачка, нейтралки. Справочники: `od_leagues` (tier premium/professional/excluded), `od_teams` (+ рейтинг), `od_pro_players` (страна, роль), `od_heroes`, `od_items`, `od_patches`.
+- `dota_map_links` — карта: OpenDota `od_match_id` ↔ Polymarket `pm_game_id` + `map_number` ↔ `cs_match_id`; `method`: `ps_length` (длина карты PandaScore = длительность OpenDota + имя команды), `ps_length_only` (без совпадения имён, длительность уникальна в окне), `cybersport` (Steam id карты cybersport). На 4 неделях: 423 карты обоими путями — 0 расхождений.
+
+Порядок сбора Dota: `collect_polymarket.py --sport dota2` → `collect_trades.py --sport dota2` → `collect_pandascore.py --sport dota2 --since 2025-06-01` → `collect_cybersport.py --sport dota2 --since 2025-06-01` → `collect_cs_teams.py --sport dota2` → `collect_opendota.py` (недостающие игры по Steam id cybersport — после cybersport; при упоре в 3000/день — повторить завтра) → `link_dota.py`.
 
 ## Бот-регистратор и бумажная торговля (`scripts/paper_bot.py`)
 
@@ -101,6 +116,10 @@ Push в `main` с изменениями в `pmbot/`, `scripts/` (кроме `sc
 | cybersport.ru `/api/v1/match-stats/csgo?filter[internalId]=<id>` | Раунды: CT/T, победившая сторона и команда, исход раунда; статистика игроков | Есть примерно у 40% матчей; лайв не подтверждён |
 | PandaScore `api.pandascore.co/csgo/matches?filter[id]=…` | Матч по `gameId` Polymarket (id совпадают): карты с `begin_at`/`end_at`/`length`/победителем; до 100 матчей за запрос | Бесплатно: только списки, 1000 запросов/ч; `/matches/{id}`, `/games/{id}`, раунды — 403; live-WS — 4003 «Unsufficient permission» (платно) |
 | GRID Open Access | Официальные данные CS2, раунды, стороны, история | Нужна заявка; 10 запросов/мин |
+| cybersport.ru Dota 2 (`filter[disciplineIds]=21`, `/api/matches/<id>`) | Матчи, карты со Steam id (`externalApiId`), состав на матч со Steam id игроков, страна, город турнира, призовые, стадия/раунд, коэффициенты | `match-stats` для Доты нет (404); названий карт нет |
+| PandaScore `/dota2/matches`, `/matches/past`, `/teams` | Матч по `gameId` Polymarket, карты с `length` и временем, турнир (LAN/онлайн, страна, регион, tier, призовые), команды с `location`, текущие составы (национальность, роль) | Бесплатно: только списки; драфта и Steam id карт нет; `/matches/{id}`, `/games` — 404 |
+| OpenDota `api.opendota.com/api/explorer?sql=` | SQL по лиговым играм: драфт, игроки, золото/опыт по минутам, объекты, тимфайты, логи — 100 игр за запрос | Без ключа 60 запросов/мин, 3000/день; **таблица полная до ~05.2026, дальше 7–25% игр** |
+| OpenDota `/matches/{id}` | То же по одной игре — для недостающих (Steam id из cybersport) | Тот же дневной лимит; `/proMatches` тоже не видит недостающие игры |
 
 `gameId` Polymarket = `externalId` в match-stats cybersport.ru (проверено на 6 из 6 матчей, имена команд совпадают; вероятно, оба берут данные у PandaScore) — ключ для связки матчей.
 

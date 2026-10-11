@@ -1,7 +1,9 @@
-"""cybersport.ru unofficial JSON API: CS2 match list, map scores and round-by-round data.
+"""cybersport.ru unofficial JSON API: CS2 / Dota 2 match list, map scores, lineups and CS2 round-by-round data.
 
-- GET /api/matches?filter[date]=YYYY-MM-DD&filter[disciplineIds]=22  -> matches of the day (Moscow date)
-- GET /api/matches/{id}                                              -> games (maps) with map names and scores
+- GET /api/matches?filter[date]=YYYY-MM-DD&filter[disciplineIds]=22  -> matches of the day (Moscow date; Dota 2 = 21)
+- GET /api/matches/{id}                                              -> games (maps) with map names and scores,
+      lineup that played (Dota: player -> dota2_player.externalId = Steam account id), bracket / round, prize pool;
+      Dota game externalApiId = Steam match id (OpenDota)
 - GET /api/v1/match-stats/csgo?filter[internalId]={id}               -> rounds and player stats per game; 404 if no stats
 - GET /api/teams/{id}                                                -> roster history, player nationality
 Tournament (`stage`) carries `location` ("Город, Страна") and since/till dates.
@@ -16,6 +18,8 @@ from pmbot.http import HttpClient
 
 API = "https://www.cybersport.ru/api"
 CS2_DISCIPLINE_ID = 22
+DISCIPLINES = {"cs2": CS2_DISCIPLINE_ID, "dota2": 21}
+_ROUND_RELS = ("swissRound", "flatRound", "groupTable", "singleCell", "doubleCell", "bracketMatch")
 
 
 def _index(doc: dict) -> dict:
@@ -32,13 +36,13 @@ def _ymd(d: dict | None) -> str | None:
     return dt.date(d["year"], d.get("month") or 1, d.get("day") or 1).isoformat()
 
 
-def list_matches(http: HttpClient, date: dt.date) -> list[dict]:
+def list_matches(http: HttpClient, date: dt.date, discipline: int = CS2_DISCIPLINE_ID) -> list[dict]:
     """Matches of one day with team names and tournament resolved from `included`."""
     result, offset = [], 0
     while True:
         doc = http.get_json(f"{API}/matches", {
             "filter[date]": date.isoformat(),
-            "filter[disciplineIds]": CS2_DISCIPLINE_ID,
+            "filter[disciplineIds]": discipline,
             "page[limit]": 100,
             "page[offset]": offset,
         })
@@ -90,7 +94,63 @@ def fetch_stats(http: HttpClient, match_id: str) -> dict | None:
 
 def fetch_games(http: HttpClient, match_id: str) -> list[dict]:
     """Maps in play order: internal game id, map name, per-map score."""
+    return _games(http.get_json(f"{API}/matches/{match_id}"))
+
+
+def fetch_details(http: HttpClient, match_id: str) -> dict:
+    """Maps (Dota: external_id = Steam match id), lineup that played, bracket/round name, prize pool."""
     doc = http.get_json(f"{API}/matches/{match_id}")
+    inc = _index(doc)
+    rels = doc["data"].get("relationships") or {}
+    players = []
+    for side in (1, 2):
+        part_ref = _ref(doc["data"], f"participant{side}")
+        part = inc.get((part_ref["type"], part_ref["id"])) if part_ref else None
+        team_ref = _ref(part, "team") if part else None
+        for ref in (rels.get(f"participant{side}TeamPlayers") or {}).get("data") or []:
+            tp = inc.get((ref["type"], ref["id"]))
+            p_ref = _ref(tp, "player") if tp else None
+            p = inc.get(("player", p_ref["id"])) if p_ref else None
+            if not p:
+                continue
+            ext_ref = _ref(p, "dotaPlayer")
+            ext = inc.get((ext_ref["type"], ext_ref["id"])) if ext_ref else None
+            players.append({
+                "side": side, "team_id": team_ref["id"] if team_ref else None, "player_id": p["id"],
+                "nickname": p["attributes"].get("nickname"), "country_code": p["attributes"].get("countryCode"),
+                "steam_id": ext["attributes"].get("externalId") if ext else None,
+                "status": tp["attributes"].get("status"), "position": tp["attributes"].get("position"),
+            })
+    stage_ref, bracket_ref = _ref(doc["data"], "stage"), _ref(doc["data"], "bracket")
+    stage = inc.get((stage_ref["type"], stage_ref["id"])) if stage_ref else None
+    bracket = inc.get((bracket_ref["type"], bracket_ref["id"])) if bracket_ref else None
+    round_name = None
+    for rel in _ROUND_RELS:
+        ref = _ref(doc["data"], rel)
+        obj = inc.get((ref["type"], ref["id"])) if ref else None
+        if obj:
+            round_name = obj["attributes"].get("name") or obj["attributes"].get("title")
+            break
+    return {
+        "games": _games(doc), "players": players,
+        "prize_pool": (stage or {}).get("attributes", {}).get("prizePool"),
+        "bracket": (bracket or {}).get("attributes", {}).get("name"), "round_name": round_name,
+    }
+
+
+def save_details(conn: sqlite3.Connection, match_id: str, details: dict) -> None:
+    with conn:
+        conn.execute("UPDATE cs_matches SET prize_pool=?, bracket=?, round_name=? WHERE id=?",
+                     (details["prize_pool"], details["bracket"], details["round_name"], match_id))
+        conn.execute("DELETE FROM cs_match_players WHERE match_id=?", (match_id,))
+        conn.executemany(
+            """INSERT OR REPLACE INTO cs_match_players (match_id, side, team_id, player_id, nickname, country_code,
+                   steam_id, status, position) VALUES (?,?,?,?,?,?,?,?,?)""",
+            [(match_id, p["side"], p["team_id"], p["player_id"], p["nickname"], p["country_code"], p["steam_id"],
+              p["status"], p["position"]) for p in details["players"]])
+
+
+def _games(doc: dict) -> list[dict]:
     inc = _index(doc)
     games = []
     for number, ref in enumerate((_ref(doc["data"], "games") or []), 1):

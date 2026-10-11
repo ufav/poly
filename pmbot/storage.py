@@ -174,6 +174,206 @@ CREATE TABLE IF NOT EXISTS cs_countries (
     code   TEXT PRIMARY KEY,
     title  TEXT
 );
+
+-- players who actually played the match (cybersport lineup); steam_id = OpenDota account_id (Dota)
+CREATE TABLE IF NOT EXISTS cs_match_players (
+    match_id      TEXT,
+    side          INTEGER,
+    team_id       TEXT,
+    player_id     TEXT,
+    nickname      TEXT,
+    country_code  TEXT,
+    steam_id      TEXT,
+    status        TEXT,
+    position      INTEGER,
+    PRIMARY KEY (match_id, side, player_id)
+) WITHOUT ROWID;
+
+-- PandaScore match (any game): schedule, result, tournament; raw = full JSON without streams
+CREATE TABLE IF NOT EXISTS ps_match_info (
+    match_id               INTEGER PRIMARY KEY,
+    name                   TEXT,
+    status                 TEXT,
+    match_type             TEXT,
+    number_of_games        INTEGER,
+    scheduled_at           TEXT,
+    original_scheduled_at  TEXT,
+    rescheduled            INTEGER,
+    begin_at               TEXT,
+    end_at                 TEXT,
+    forfeit                INTEGER,
+    winner_id              INTEGER,
+    team1_id               INTEGER,
+    team2_id               INTEGER,
+    score1                 INTEGER,
+    score2                 INTEGER,
+    tournament_id          INTEGER,
+    serie_id               INTEGER,
+    league_id              INTEGER,
+    raw                    TEXT
+);
+CREATE INDEX IF NOT EXISTS ps_match_info_begin ON ps_match_info(begin_at);
+
+-- tournament (stage) with serie and league; type online/offline, country, region, tier s/a/b/c/d
+CREATE TABLE IF NOT EXISTS ps_tournaments (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT,
+    type          TEXT,
+    country       TEXT,
+    region        TEXT,
+    tier          TEXT,
+    prizepool     TEXT,
+    begin_at      TEXT,
+    end_at        TEXT,
+    has_bracket   INTEGER,
+    serie_id      INTEGER,
+    serie_name    TEXT,
+    serie_year    INTEGER,
+    league_id     INTEGER,
+    league_name   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ps_teams (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT,
+    acronym     TEXT,
+    slug        TEXT,
+    location    TEXT,
+    fetched_at  TEXT
+);
+
+-- current roster at fetch time (PandaScore free tier has no history)
+CREATE TABLE IF NOT EXISTS ps_players (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT,
+    first_name   TEXT,
+    last_name    TEXT,
+    nationality  TEXT,
+    role         TEXT,
+    age          INTEGER,
+    birthday     TEXT,
+    active       INTEGER,
+    team_id      INTEGER
+);
+
+-- OpenDota league game (one Dota map); JSON columns: per-minute radiant advantage, objectives with time
+CREATE TABLE IF NOT EXISTS od_matches (
+    match_id                 INTEGER PRIMARY KEY,
+    start_time               INTEGER,
+    duration                 INTEGER,
+    radiant_win              INTEGER,
+    leagueid                 INTEGER,
+    series_id                INTEGER,
+    series_type              INTEGER,
+    radiant_team_id          INTEGER,
+    dire_team_id             INTEGER,
+    radiant_team_name        TEXT,
+    dire_team_name           TEXT,
+    radiant_score            INTEGER,
+    dire_score               INTEGER,
+    radiant_captain          INTEGER,
+    dire_captain             INTEGER,
+    first_blood_time         INTEGER,
+    tower_status_radiant     INTEGER,
+    tower_status_dire        INTEGER,
+    barracks_status_radiant  INTEGER,
+    barracks_status_dire     INTEGER,
+    cluster                  INTEGER,
+    game_mode                INTEGER,
+    lobby_type               INTEGER,
+    version                  INTEGER,
+    patch                    TEXT,
+    radiant_gold_adv         TEXT,
+    radiant_xp_adv           TEXT,
+    objectives               TEXT,
+    draft_timings            TEXT,
+    fetched_at               TEXT
+);
+CREATE INDEX IF NOT EXISTS od_matches_start ON od_matches(start_time);
+
+-- draft: team 0 = radiant, 1 = dire
+CREATE TABLE IF NOT EXISTS od_picks_bans (
+    match_id  INTEGER,
+    ord       INTEGER,
+    is_pick   INTEGER,
+    hero_id   INTEGER,
+    team      INTEGER,
+    PRIMARY KEY (match_id, ord)
+) WITHOUT ROWID;
+
+-- player_slot < 128 = radiant; *_t = cumulative value per minute
+CREATE TABLE IF NOT EXISTS od_players (
+    match_id                 INTEGER,
+    player_slot              INTEGER,
+    account_id               INTEGER,
+    hero_id                  INTEGER,
+    kills                    INTEGER,
+    deaths                   INTEGER,
+    assists                  INTEGER,
+    last_hits                INTEGER,
+    denies                   INTEGER,
+    gold_per_min             INTEGER,
+    xp_per_min               INTEGER,
+    gold_spent               INTEGER,
+    net_worth                INTEGER,
+    hero_damage              INTEGER,
+    tower_damage             INTEGER,
+    hero_healing             INTEGER,
+    level                    INTEGER,
+    stuns                    REAL,
+    lane                     INTEGER,
+    lane_role                INTEGER,
+    is_roaming               INTEGER,
+    teamfight_participation  REAL,
+    towers_killed            INTEGER,
+    roshans_killed           INTEGER,
+    obs_placed               INTEGER,
+    sen_placed               INTEGER,
+    camps_stacked            INTEGER,
+    creeps_stacked           INTEGER,
+    rune_pickups             INTEGER,
+    firstblood_claimed       INTEGER,
+    leaver_status            INTEGER,
+    item_0 INTEGER, item_1 INTEGER, item_2 INTEGER, item_3 INTEGER, item_4 INTEGER, item_5 INTEGER,
+    backpack_0 INTEGER, backpack_1 INTEGER, backpack_2 INTEGER, item_neutral INTEGER,
+    gold_t                   TEXT,
+    xp_t                     TEXT,
+    lh_t                     TEXT,
+    dn_t                     TEXT,
+    times                    TEXT,
+    PRIMARY KEY (match_id, player_slot)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS od_players_account ON od_players(account_id);
+
+-- zlib JSON: teamfights + per-player logs (kills, purchases, buybacks, runes, wards, ...) — opendota.load_logs
+CREATE TABLE IF NOT EXISTS od_logs (
+    match_id  INTEGER PRIMARY KEY,
+    data      BLOB
+);
+
+-- Steam game ids OpenDota answered 404 for (not retried)
+CREATE TABLE IF NOT EXISTS od_missing (match_id INTEGER PRIMARY KEY, fetched_at TEXT);
+
+CREATE TABLE IF NOT EXISTS od_leagues (leagueid INTEGER PRIMARY KEY, name TEXT, tier TEXT);
+CREATE TABLE IF NOT EXISTS od_teams (
+    team_id INTEGER PRIMARY KEY, name TEXT, tag TEXT, rating REAL, wins INTEGER, losses INTEGER, last_match_time INTEGER);
+CREATE TABLE IF NOT EXISTS od_pro_players (
+    account_id INTEGER PRIMARY KEY, name TEXT, country_code TEXT, fantasy_role INTEGER, team_id INTEGER,
+    team_name TEXT, team_tag TEXT, is_pro INTEGER);
+CREATE TABLE IF NOT EXISTS od_heroes (
+    id INTEGER PRIMARY KEY, name TEXT, localized_name TEXT, primary_attr TEXT, attack_type TEXT, roles TEXT);
+CREATE TABLE IF NOT EXISTS od_items (id INTEGER PRIMARY KEY, name TEXT, cost INTEGER);
+CREATE TABLE IF NOT EXISTS od_patches (id INTEGER PRIMARY KEY, name TEXT, date TEXT);
+
+-- Dota map links: OpenDota game -> Polymarket event (game_id) and map number, cybersport match
+CREATE TABLE IF NOT EXISTS dota_map_links (
+    od_match_id  INTEGER PRIMARY KEY,
+    pm_game_id   INTEGER,
+    map_number   INTEGER,
+    cs_match_id  TEXT,
+    method       TEXT
+);
+CREATE INDEX IF NOT EXISTS dota_map_links_pm ON dota_map_links(pm_game_id, map_number);
 """
 
 # columns added after the first release: (table, column, type)
@@ -184,6 +384,9 @@ MIGRATIONS = [
     ("cs_matches", "stage_since", "TEXT"),
     ("cs_matches", "stage_till", "TEXT"),
     ("pm_markets", "trades_status", "TEXT"),
+    ("cs_matches", "prize_pool", "INTEGER"),
+    ("cs_matches", "bracket", "TEXT"),
+    ("cs_matches", "round_name", "TEXT"),
 ]
 
 
