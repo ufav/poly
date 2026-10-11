@@ -80,6 +80,9 @@ def main() -> None:
     for r in rows:
         if r["lead"] >= 6 or (r["lead"] == 4 and r["first_side"] == "T"):
             signals["R-8 leader at half"].append((r, r["t_half"] + OFFSET, r["price"][OFFSET]))
+        p_half = r["price"].get(OFFSET)
+        if p_half is not None and 0.70 <= p_half < 0.92:
+            signals["control: any team priced 0.70-0.92 at half, score ignored"].append((r, r["t_half"] + OFFSET, p_half))
         e = entry(r, 5, 11, OFFSET)
         if e:
             n = len(r["seq_all"])
