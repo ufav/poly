@@ -7,7 +7,7 @@ A-29. 1:1 -> at map 3 start: price of the map 2 winner ("momentum") vs map 3 res
 Map winners from settled Polymarket map markets; prices taken 2 min before map begin (PandaScore), after the
 previous map ended — no look-ahead. ROI: taker fee 0.05*p*(1-p) + --slippage.
 
-  python analysis/between_maps.py [--fav 0.60] [--slippage 0.01]
+  python analysis/between_maps.py [--fav 0.60] [--slippage 0.01] [--sport dota2]
 """
 
 import argparse
@@ -90,8 +90,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fav", type=float, default=0.60)
     ap.add_argument("--slippage", type=float, default=0.01)
+    ap.add_argument("--sport", choices=storage.SPORTS, default="cs2")
     args = ap.parse_args()
-    conn = storage.connect()
+    conn = storage.connect(storage.db_path(args.sport))
     matches = load_bo3(conn)
     print(f"BO3 matches with settled maps 1-2: {len(matches)}\n")
 
@@ -124,8 +125,9 @@ def main() -> None:
                 moved = conn.execute("SELECT COUNT(DISTINCT p) FROM pm_prices WHERE token_id = ? AND t BETWEEN ? AND ?",
                                      (token2, t - 3600, t)).fetchone()[0] > 1
                 key = "underdog won map 1" if w[0] == dog else "favorite won map 1"
-                bucket = "0.60-0.70" if fav_p < 0.70 else "0.70-0.80" if fav_p < 0.80 else "0.80+"
-                tier = "tier1" if tier_of(m["tournament"]) == "tier1" else "not tier1"
+                bucket = ("0.50-0.60" if fav_p < 0.60 else "0.60-0.70" if fav_p < 0.70 else "0.70-0.80"
+                          if fav_p < 0.80 else "0.80+")
+                tier = "tier1" if tier_of(m["tournament"], args.sport) == "tier1" else "not tier1"
                 vol = "match volume >= $200k" if m["ml_volume"] >= 200_000 else "match volume < $200k"
                 for b in ("all", bucket, "map2 price moved in last hour" if moved else "map2 price flat for 1 h",
                           tier, vol):
@@ -142,7 +144,7 @@ def main() -> None:
             who = "favorite" if mom == fav else "underdog"
             item = (side_price(p3_a, mom), w[2] == mom)
             g29["all"].append(item)
-            g29["tier1" if tier_of(m["tournament"]) == "tier1" else "not tier1"].append(item)
+            g29["tier1" if tier_of(m["tournament"], args.sport) == "tier1" else "not tier1"].append(item)
             g29[f"map 2 won by the {who}"].append(item)
             if strong:
                 g29[f"map 2 won by the {who} (fav >= {args.fav:.2f})"].append(item)
@@ -150,7 +152,7 @@ def main() -> None:
     print(f"A-28. Favorite >= {args.fav:.2f}; buy the UNDERDOG at map 2 start (2 min before)")
     for key in ("underdog won map 1", "favorite won map 1"):
         for mk in ("match", "map2"):
-            for bucket in ("all", "0.60-0.70", "0.70-0.80", "0.80+", "map2 price moved in last hour",
+            for bucket in ("all", "0.50-0.60", "0.60-0.70", "0.70-0.80", "0.80+", "map2 price moved in last hour",
                            "map2 price flat for 1 h", "tier1", "not tier1", "match volume >= $200k",
                            "match volume < $200k"):
                 report(f"{key}: {mk} market, fav {bucket}", g28[(key, mk, bucket)], args.slippage)
