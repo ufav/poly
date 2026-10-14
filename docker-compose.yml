@@ -10,3 +10,20 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+  # Dota 2: map 1 loser on map 2 (docs/research.md R-20), own database data/live_dota2.sqlite and banks
+  paper-bot-dota:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PAPER_SPORT: dota2
+      PAPER_STAKE_PCT: "1"
+      PAPER_RULES: ""
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

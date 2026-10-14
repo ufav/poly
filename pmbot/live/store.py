@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS paper_bank (
 """
 
 
+def live_db(sport: str = "cs2") -> Path:
+    """data/live.sqlite for CS2 (as before), data/live_<sport>.sqlite for other sports."""
+    return LIVE_DB if sport == "cs2" else LIVE_DB.with_name(f"live_{sport}.sqlite")
+
+
 def connect(path: Path = LIVE_DB) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=60, check_same_thread=False)

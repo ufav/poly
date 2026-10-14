@@ -1,18 +1,19 @@
-"""Live CS2 recorder + paper trading bot (no real orders, no private key needed).
+"""Live recorder + paper trading bot of one sport, CS2 or Dota 2 (no real orders, no private key needed).
 
-- discovery: open CS2 events from Gamma every 60 s (markets, tokens);
+- discovery: open events of the sport from Gamma every 60 s (markets, tokens);
 - score: Polymarket sports WebSocket, every change stored with arrival time;
 - order book of the current map market every BOOK_INTERVAL s, stored on change;
 - paper trades by pmbot/live/paper.py rules, filled on the real book after 1 s (Polymarket delay);
-- paper maker (tier1): taker tape of the current map market polled every MAKER_INTERVAL s, bid fills simulated;
+  CS2 - on the round score of the current map; Dota 2 - on the map score when the feed switches to the next map;
+- paper maker (CS2 tier1): taker tape of the current map market polled every MAKER_INTERVAL s, bid fills simulated;
 - settlement from Gamma, Telegram notifications, daily summary;
-- daily cybersport.ru collection (first-half sides / rounds for later analysis).
+- CS2: daily cybersport.ru collection (first-half sides / rounds for later analysis).
 
 Stake = PAPER_STAKE_PCT % of the rule's own virtual bank (PAPER_BANK_USD at the first start + settled P&L).
 
-Env (all optional): PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default all of
-paper.ALL_RULES), BOOK_INTERVAL=10, MAKER_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3,
-TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+Env (all optional): PAPER_SPORT=cs2 (or dota2; database data/live.sqlite / data/live_dota2.sqlite),
+PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default all of paper.SPORT_RULES[sport]),
+BOOK_INTERVAL=10, MAKER_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
   python scripts/paper_bot.py
 """
@@ -38,21 +39,28 @@ from pmbot.live import feeds, paper, report, store  # noqa: E402
 from pmbot.telegram import Telegram  # noqa: E402
 
 log = logging.getLogger("paper_bot")
+SPORT_LABEL = {"cs2": "CS2", "dota2": "Dota 2"}
 
 
 class Bot:
     def __init__(self) -> None:
+        self.sport = os.getenv("PAPER_SPORT") or "cs2"
+        if self.sport not in paper.SPORT_RULES:
+            raise SystemExit(f"PAPER_SPORT must be one of {sorted(paper.SPORT_RULES)}")
         self.bank_usd = float(os.getenv("PAPER_BANK_USD", "1000"))
         self.stake_pct = float(os.getenv("PAPER_STAKE_PCT", "2"))
-        names = [n.strip() for n in (os.getenv("PAPER_RULES") or ",".join(sorted(paper.ALL_RULES))).split(",")]
-        self.rules = {n: paper.RULES[n] for n in names if n in paper.RULES}
+        allowed = paper.SPORT_RULES[self.sport]
+        names = [n.strip() for n in (os.getenv("PAPER_RULES") or ",".join(sorted(allowed))).split(",")]
+        names = [n for n in names if n in allowed]
+        score_rules = paper.RULES | paper.DOTA_RULES
+        self.rules = {n: score_rules[n] for n in names if n in score_rules}
         self.band_rules = {n: paper.BAND_RULES[n] for n in names if n in paper.BAND_RULES}
         self.maker_rules = {n: paper.MAKER_RULES[n] for n in names if n in paper.MAKER_RULES}
         self.book_interval = float(os.getenv("BOOK_INTERVAL", "10"))
         self.maker_interval = float(os.getenv("MAKER_INTERVAL", "10"))
         self.report_hour = int(os.getenv("REPORT_HOUR_UTC", "18"))
         self.cs_hour = int(os.getenv("CS_COLLECT_HOUR_UTC", "3"))
-        self.conn = store.connect()
+        self.conn = store.connect(store.live_db(self.sport))
         for name in self.all_rules:
             store.open_bank(self.conn, name, self.bank_usd)
         self.tg = Telegram()
@@ -60,6 +68,7 @@ class Bot:
         self.live: dict[int, dict] = {}         # game_id -> last WS item
         self.last_key: dict[int, tuple] = {}
         self.prematch: dict[int, dict[str, float]] = {}
+        self.seen_maps: dict[int, set[int]] = {}  # game_id -> map numbers seen live in this run
         self.last_book: dict[str, tuple] = {}
         self.fired = {(s, g, m) for s, g, m in self.conn.execute(
             "SELECT strategy, game_id, map_number FROM paper_trades")}
@@ -92,7 +101,7 @@ class Bot:
         http = HttpClient(min_interval=0.3)
         while True:
             try:
-                events = await asyncio.to_thread(feeds.open_events, http)
+                events = await asyncio.to_thread(feeds.open_events, http, 2, polymarket.SERIES[self.sport])
                 for e in events:
                     g = feeds.parse_event(e)
                     if not g["game_id"] or not g["markets"]:
@@ -107,14 +116,14 @@ class Bot:
 
     # ---------- live score ----------
     async def ws_loop(self) -> None:
-        async for item in feeds.sports_updates():
+        async for item in feeds.sports_updates(feeds.LEAGUES[self.sport]):
             gid = item.get("gameId")
             if gid is None:
                 continue
             prev = self.last_key.get(gid)
             if (prev and str(item.get("score") or "").startswith("000-000") and item.get("period") == prev[1]
                     and not item.get("ended")):
-                # the feed interleaves '000-000' frames for all CS2 games every ~20 s; on a new map it is a real reset
+                # the feed interleaves '000-000' frames for all games every ~20 s; on a new map it is a real reset
                 continue
             key = (item.get("score"), item.get("period"), item.get("status"), item.get("ended"))
             self.live[gid] = item
@@ -124,7 +133,10 @@ class Bot:
             store.save_score(self.conn, gid, item.get("score"), item.get("period"), item.get("status"),
                              item.get("homeTeam"), item.get("awayTeam"))
             if item.get("live") and not item.get("ended"):
-                asyncio.create_task(self.evaluate(gid, item))
+                if self.sport == "dota2":
+                    asyncio.create_task(self.evaluate_maps(gid, item))
+                else:
+                    asyncio.create_task(self.evaluate(gid, item))
             if item.get("ended"):
                 with self.conn:
                     self.conn.execute("UPDATE live_games SET ended_at=COALESCE(ended_at, ?) WHERE game_id=?",
@@ -179,11 +191,40 @@ class Bot:
             if team and (name, gid, map_number) not in self.fired:
                 self.fired.add((name, gid, map_number))
                 await self.open_trade(name, gid, game, state, team, (m_home, m_away))
-        if paper.HALF_ROUNDS[0] <= state.total <= paper.HALF_ROUNDS[1] and paper.is_tier1(game):
+        if paper.HALF_ROUNDS[0] <= state.total <= paper.HALF_ROUNDS[1] and paper.is_tier1(game, self.sport):
             for name, band in self.band_rules.items():
                 if (name, gid, map_number) not in self.fired:
                     self.fired.add((name, gid, map_number))
                     await self.open_band_trade(name, gid, game, state, (m_home, m_away), band)
+
+    async def evaluate_maps(self, gid: int, item: dict) -> None:
+        """Dota 2 tier1 BO3: rules on the map score, only if the previous map of the game was seen live in this run
+        (after a restart the feed may already be deep into the map, and '000-000' frames come at any time)."""
+        game = self.games[gid]
+        maps = paper.parse_maps(item.get("score"))
+        teams = self.team_names(game, item)
+        try:
+            map_number = int(str(item.get("period") or "").split("/")[0])
+        except ValueError:
+            return
+        seen = self.seen_maps.setdefault(gid, set())
+        seen.add(map_number)
+        if (not maps or not teams or map_number - 1 not in seen or game.get("best_of") != 3
+                or map_number != sum(maps) + 1 or not paper.is_tier1(game, self.sport)):
+            return
+        if all((name, gid, map_number) in self.fired for name in self.rules):
+            return
+        prematch = await self.get_prematch(gid, game)
+        if not prematch:
+            return
+        parsed = paper.parse_score(item.get("score"))
+        kills = parsed[0] if parsed else (0, 0)
+        state = paper.MapState(map_number, dict(zip(teams, kills)), dict(zip(teams, maps)), prematch)
+        for name, rule in self.rules.items():
+            team = rule(state)
+            if team and (name, gid, map_number) not in self.fired:
+                self.fired.add((name, gid, map_number))
+                await self.open_trade(name, gid, game, state, team, maps)
 
     async def fetch_book(self, token: str) -> dict | None:
         async with self.trade_lock:
@@ -247,7 +288,10 @@ class Bot:
                  fill["fee"], fill["filled"], status))
         if cur.rowcount == 0:  # already traded before a restart
             return
-        score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
+        if self.sport == "dota2":
+            score = "по картам " + " : ".join(f"{t} {n}" for t, n in s.maps.items())
+        else:
+            score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
         fav = max(s.prematch, key=s.prematch.get)
         if status == "unfilled":
             result = f"Не исполнено: в стакане {team} нет заявок на продажу"
@@ -285,7 +329,7 @@ class Bot:
         quotes: dict[tuple[str, str], paper.MakerQuote] = {}
         while True:
             for gid, game, item, map_number, market in self.live_markets():
-                if not paper.is_tier1(game) or not market.get("condition_id"):
+                if not paper.is_tier1(game, self.sport) or not market.get("condition_id"):
                     continue
                 try:
                     trades = await asyncio.to_thread(polymarket.fetch_trades, http, market["condition_id"], 1)
@@ -371,8 +415,8 @@ class Bot:
             now = dt.datetime.now(dt.timezone.utc)
             if now.hour == self.report_hour and ("report", now.date()) not in done:
                 done.add(("report", now.date()))
-                self.tg.send(report.daily(self.conn))
-            if now.hour == self.cs_hour and ("cs", now.date()) not in done:
+                self.tg.send(f"{SPORT_LABEL[self.sport]}. " + report.daily(self.conn))
+            if self.sport == "cs2" and now.hour == self.cs_hour and ("cs", now.date()) not in done:
                 done.add(("cs", now.date()))
                 since = (now.date() - dt.timedelta(days=2)).isoformat()
                 proc = await asyncio.create_subprocess_exec(
@@ -384,8 +428,9 @@ class Bot:
 
     async def run(self) -> None:
         banks = {n: store.bank(self.conn, n) for n in self.all_rules}
-        log.info("rules: %s, stake %g%% of bank, telegram %s", banks, self.stake_pct, "on" if self.tg.enabled else "off")
-        self.tg.send(f"🤖 Бумажный бот запущен. Ставка {self.stake_pct:g}% от банка правила.\nБанки: "
+        log.info("%s rules: %s, stake %g%% of bank, telegram %s", self.sport, banks, self.stake_pct,
+                 "on" if self.tg.enabled else "off")
+        self.tg.send(f"🤖 Бумажный бот {SPORT_LABEL[self.sport]} запущен. Ставка {self.stake_pct:g}% от банка правила.\nБанки: "
                      + ", ".join(f"{n} {b:.2f}$" for n, b in banks.items()))
         await asyncio.gather(self.discovery_loop(), self.ws_loop(), self.books_loop(), self.maker_loop(),
                              self.settle_loop(), self.daily_loop())

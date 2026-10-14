@@ -14,6 +14,7 @@ from pmbot.polymarket import CLOB, CS2_SERIES_ID, GAMMA, _title_parts, parse_ts
 
 SPORTS_WS = "wss://sports-api.polymarket.com/ws"
 CS2_LEAGUES = {"cs2", "csgo"}
+LEAGUES = {"cs2": CS2_LEAGUES, "dota2": {"dota2"}}  # leagueAbbreviation of the sports WebSocket
 log = logging.getLogger(__name__)
 
 
@@ -39,12 +40,13 @@ def parse_event(event: dict) -> dict:
     }
 
 
-def open_events(http: HttpClient, days_back: int = 2) -> list[dict]:
-    """Not yet closed CS2 events that started recently or are upcoming (old unresolved ones are skipped)."""
+def open_events(http: HttpClient, days_back: int = 2, series_id: int = CS2_SERIES_ID) -> list[dict]:
+    """Not yet closed events of a series (CS2 by default) that started recently or are upcoming (old unresolved ones
+    are skipped)."""
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     events, offset = [], 0
     while True:
-        page = http.get_json(f"{GAMMA}/events", {"series_id": CS2_SERIES_ID, "closed": "false", "limit": 100,
+        page = http.get_json(f"{GAMMA}/events", {"series_id": series_id, "closed": "false", "limit": 100,
                                                  "offset": offset, "start_date_min": since})
         events += page
         if len(page) < 100:
@@ -83,8 +85,9 @@ def prematch_price(http: HttpClient, token: str, start_time: str | None) -> floa
     return None
 
 
-async def sports_updates() -> AsyncIterator[dict]:
-    """CS2 items from the sports WebSocket: gameId, homeTeam, awayTeam, score, period, status, live, ended.
+async def sports_updates(leagues: set[str] = CS2_LEAGUES) -> AsyncIterator[dict]:
+    """Items of the leagues (CS2 by default) from the sports WebSocket: gameId, homeTeam, awayTeam, score, period,
+    status, live, ended. Score is 'rounds|maps|BoN' (CS2) or 'kills|maps|BoN' (Dota 2).
     Reconnects forever; the server sends 'ping' text frames that must be answered with 'pong'."""
     delay = 1
     while True:
@@ -102,7 +105,7 @@ async def sports_updates() -> AsyncIterator[dict]:
                     except json.JSONDecodeError:
                         continue
                     for item in data if isinstance(data, list) else [data]:
-                        if str(item.get("leagueAbbreviation") or "").lower() in CS2_LEAGUES:
+                        if str(item.get("leagueAbbreviation") or "").lower() in leagues:
                             yield item
         except Exception as e:  # network errors, timeouts, server closes
             log.warning("sports ws error: %r; reconnect in %ss", e, delay)

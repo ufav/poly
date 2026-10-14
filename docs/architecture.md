@@ -18,8 +18,8 @@ pmbot/                    пакет с переиспользуемым код�
   telegram.py             уведомления (выключены без TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
   live/                   бот-регистратор и бумажная торговля
     feeds.py              sports WebSocket (счёт), Gamma (матчи, рынки, расчёт), CLOB /book
-    store.py              база data/live.sqlite
-    paper.py              правила (по счёту, по цене, мейкер), симуляция исполнения по стакану / ленте, расчёт
+    store.py              база data/live.sqlite (CS2), data/live_dota2.sqlite (Dota 2)
+    paper.py              правила (по счёту, по цене, мейкер; Dota — по счёту карт), симуляция исполнения по стакану / ленте, расчёт
     report.py             сводка по правилам
 scripts/
   check_env.py            проверка .env
@@ -32,8 +32,8 @@ scripts/
   link_dota.py            пересборка dota_map_links
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков
-  paper_bot.py            бот: регистратор live-матчей + бумажные сделки (запускается в Docker)
-  paper_report.py         отчёт по бумажным сделкам
+  paper_bot.py            бот: регистратор live-матчей + бумажные сделки (запускается в Docker; PAPER_SPORT=cs2 / dota2)
+  paper_report.py         отчёт по бумажным сделкам (--sport dota2)
   research/               разовые исследовательские скрипты
 analysis/                 проверки гипотез (результаты — docs/research.md)
 data/
@@ -86,6 +86,8 @@ docs/                     CJM, архитектура, бэклог
 - Telegram: сигнал, расчёт, итог дня в `REPORT_HOUR_UTC`; в `CS_COLLECT_HOUR_UTC` — сбор cybersport.ru за 2 дня (стороны первой половины для анализа).
 
 База `data/live.sqlite`: `live_games`, `live_markets`, `live_scores`, `live_books`, `paper_trades` (статусы `open` / `settled` / `unfilled` / `rejected` — ask противоречит счёту / `invalid` — помечено вручную, в отчёт не идёт), `paper_bank`.
+
+Dota 2 — тот же бот вторым контейнером `paper-bot-dota` (`PAPER_SPORT=dota2`, `PAPER_STAKE_PCT=1`, все правила Доты; база `data/live_dota2.sqlite`, свои банки): Gamma series 10309, WebSocket лиги `dota2` (счёт `убийства|карты|BoN`, у части кадров убийства «000-000»). Правила `paper.DOTA_RULES` (R-20) — только tier1 BO3: когда фид переключается на карту 2, покупка проигравшего карту 1 на карту 2 (по кэфу матча до начала: 2.0–2.5, 2.5–3.33, любой). Срабатывают, только если бот в этом запуске видел карту 1 (после перезапуска посреди карты 2 — пропуск). Сбор cybersport в контейнере Доты не запускается. Отчёт: `docker compose exec paper-bot-dota python scripts/paper_report.py --sport dota2`.
 
 ### Деплой (Linux + Docker)
 

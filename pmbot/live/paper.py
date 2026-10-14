@@ -4,6 +4,7 @@ Rules are hypotheses to test, not proven strategies (see docs/research.md). Each
 halftime rules at 12-13 rounds played (MR12, one missed WebSocket update tolerated), late rules in the 2nd half.
 Price rules (tier1 only): a taker buy of the side priced in a band at the half, and a paper maker whose bid on the
 favourite is filled from the taker tape (one position per map, up to the stake).
+Dota 2 (tier1 BO3, R-20): at the switch to map 2, buy the side that lost map 1 by its match price at scheduled start.
 """
 
 import json
@@ -69,6 +70,16 @@ def leader_late(min_lead: int, min_rounds: int):
     return rule
 
 
+def map1_loser(lo: float, hi: float):
+    """BO3 map 2: the side that lost map 1, if its match price at scheduled start is in [lo, hi)."""
+    def rule(s: MapState) -> str | None:
+        if s.map_number != 2 or sorted(s.maps.values()) != [0, 1]:
+            return None
+        team = min(s.maps, key=s.maps.get)
+        return team if lo <= s.prematch[team] < hi else None
+    return rule
+
+
 RULES = {
     "fav_comeback_half": fav_comeback(0.70, range(2, 5)),
     "fav_comeback_wide": fav_comeback(0.60, range(2, 7)),
@@ -83,11 +94,18 @@ MIN_ASK = {"leader_half": 0.55, "leader_half6": 0.60, "leader_late": 0.60}
 # price rules, tier1 only (R-14 / R-15: in tier1 live the favourite priced 0.70-0.92 is underpriced by 2-3 pp)
 BAND_RULES = {"fav_band_t1": (0.70, 0.92)}   # taker at the half: buy the side whose ask is in the band
 MAKER_RULES = {"maker_t1": (0.70, 0.92)}     # resting bid on the favourite, filled only when a taker trades through
-ALL_RULES = set(RULES) | set(BAND_RULES) | set(MAKER_RULES)
+
+# Dota 2 tier1 BO3, map 2 after a lost map 1 (R-20): underdog at odds 2.0-2.5 / 2.5-3.33, and any map 1 loser
+DOTA_RULES = {
+    "dota_dog_m2": map1_loser(0.40, 0.50),
+    "dota_dog3_m2": map1_loser(0.30, 0.40),
+    "dota_loser_m2": map1_loser(0.0, 1.01),
+}
+SPORT_RULES = {"cs2": set(RULES) | set(BAND_RULES) | set(MAKER_RULES), "dota2": set(DOTA_RULES)}
 
 
-def is_tier1(game: dict) -> bool:
-    return tier_of(game.get("tournament")) == "tier1"
+def is_tier1(game: dict, sport: str = "cs2") -> bool:
+    return tier_of(game.get("tournament"), sport) == "tier1"
 
 
 @dataclass
@@ -157,6 +175,18 @@ def parse_score(score: str | None) -> tuple[tuple[int, int], tuple[int, int]] | 
     except ValueError:
         return None
     return (r[0], r[1]), (m[0], m[1])
+
+
+def parse_maps(score: str | None) -> tuple[int, int] | None:
+    """'000-000|1-0|Bo3' -> (1, 0): maps won in home-away order, also when kills / rounds are unknown."""
+    parts = (score or "").split("|")
+    if len(parts) < 2 or "-" not in parts[1]:
+        return None
+    try:
+        a, b = (int(x) for x in parts[1].split("-"))
+    except ValueError:
+        return None
+    return a, b
 
 
 def map_market(game: dict, map_number: int, maps_won: tuple[int, int]) -> dict | None:
