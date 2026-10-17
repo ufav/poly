@@ -40,6 +40,7 @@ DOG_BANDS = [
 ]
 
 TIER_ORDER = ("slam", "masters", "500", "250/125", "challenger", "itf")
+SERIES_ORDER = ("atp", "wta", "itf")
 SURF_ORDER = ("Hard", "Clay", "Grass")
 
 

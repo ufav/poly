@@ -1,16 +1,17 @@
-"""Olimpbet (old.olimpbet.kz) results JSON API: tennis matches of a day with tournament, players and set scores.
+"""Olimpbet (old.olimpbet.kz) results JSON API: matches of a day with tournament, competitors and period scores.
 
 - GET /api/v2/event-results?locale=en&sport-ids=101&scheduled-from=..&scheduled-to=..&page-size=100[&page-key=..]
   -> {items, paginationKeyForward}; item: tournament {id, name, countryId}, competitors [{id, name, countryId}],
      homeCompetitorIds, eventDate (UTC), basicStatistics.scoresByPeriod (sets), currentScore (sets won), status.
-Tournament name carries level, city, country and surface: 'ATP Challenger. Columbus. USA. Hard',
-'World Tennis W15. Monastir. Tunisia. Hard', '... Doubles', 'UTR PTT. Newport Beach. USA. Hard. Women'.
+Tennis (101): tournament name carries level/city/country/surface.
+Volleyball (104): scoresByPeriod = points per set (e.g. 25-22); see results?sIds=104.
 Behind Cloudflare: plain requests pass, keep a slow pace (the site is protected against scraping).
 """
 
 import datetime as dt
 import json
 import sqlite3
+import time
 
 import httpx
 
@@ -18,6 +19,7 @@ from pmbot.http import HttpClient
 
 API = "https://old.olimpbet.kz/api/v2/event-results"
 TENNIS_SPORT_ID = 101
+VOLLEYBALL_SPORT_ID = 104  # https://old.olimpbet.kz/results?status=ENDED&sIds=104
 SITE_TZ = "+05:00"  # day boundaries as on the site (Kazakhstan)
 SURFACES = ("Hard", "Clay", "Grass", "Carpet")
 STATUSES = ("TRADING", "SUSPENDED", "OPEN", "CANCELLED", "INTERRUPTED", "POSTPONED", "ENDED", "CLOSED")
@@ -67,21 +69,23 @@ def _fetch_pages(http: HttpClient, url: str) -> tuple[list[dict], int]:
             return items, pages
 
 
-def fetch_day(http: HttpClient, day: dt.date) -> tuple[list[dict], int, int]:
+def fetch_day(http: HttpClient, day: dt.date, sport_id: int = TENNIS_SPORT_ID
+              ) -> tuple[list[dict], int, int]:
     """All result items of a day, requests made, and hours lost. On a server error the day is retried with smaller
     pages, then hour by hour (an hour that still fails is skipped and counted). Blocking errors (403 / 429 /
     network) are raised to the caller."""
     requests = 0
     for size in PAGE_SIZES:
         try:
-            items, pages = _fetch_pages(http, day_url(day, page_size=size))
+            items, pages = _fetch_pages(http, day_url(day, sport_id=sport_id, page_size=size))
             return items, requests + pages, 0
         except ServerError:
             requests += 1
     items, failed = [], 0
     for h in range(24):
         try:
-            got, pages = _fetch_pages(http, day_url(day, hours=(h, h), page_size=PAGE_SIZES[-1]))
+            got, pages = _fetch_pages(http, day_url(day, sport_id=sport_id, hours=(h, h),
+                                                    page_size=PAGE_SIZES[-1]))
             items += got
             requests += pages
         except ServerError:
@@ -106,32 +110,44 @@ def parse_tournament(name: str) -> dict:
     }
 
 
-def save_day(conn: sqlite3.Connection, day: dt.date, items: list[dict], pages: int, failed_hours: int = 0) -> None:
-    with conn:
-        for e in items:
-            t = e["tournament"]
-            conn.execute(
-                """INSERT INTO ob_tournaments (id, name, country_id, level, city, country, surface, doubles, women)
-                   VALUES (:id, :name, :country_id, :level, :city, :country, :surface, :doubles, :women)
-                   ON CONFLICT(id) DO UPDATE SET name=excluded.name""",
-                {"id": t["id"], "name": t["name"], "country_id": t.get("countryId"), **parse_tournament(t["name"])})
-            comp = {c["id"]: c for c in e.get("competitors", [])}
-            home_ids = e.get("homeCompetitorIds") or []
-            home = next((comp[i] for i in home_ids if i in comp), None)
-            away = next((c for i, c in comp.items() if i not in home_ids), None)
-            stats = e.get("basicStatistics") or {}
-            cur = stats.get("currentScore") or {}
-            sets = [(s.get("homeScore"), s.get("awayScore")) for s in stats.get("scoresByPeriod") or []]
-            conn.execute(
-                """INSERT OR REPLACE INTO ob_events (id, tournament_id, day, scheduled_at, home_id, home, home_country_id,
-                       away_id, away, away_country_id, sets_home, sets_away, set_scores, status, completion_status,
-                       event_type, raw)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (e["id"], t["id"], day.isoformat(), e.get("eventDate"),
-                 home and home["id"], home and home["name"], home and home.get("countryId"),
-                 away and away["id"], away and away["name"], away and away.get("countryId"),
-                 cur.get("homeScore"), cur.get("awayScore"), json.dumps(sets), e.get("status"),
-                 e.get("completionStatus"), (e.get("eventType") or {}).get("name"),
-                 json.dumps(e, ensure_ascii=False)))
-        conn.execute("INSERT OR REPLACE INTO ob_days (day, events, pages, failed_hours, fetched_at) VALUES (?,?,?,?,?)",
-                     (day.isoformat(), len(items), pages, failed_hours, dt.datetime.now(dt.timezone.utc).isoformat()))
+def save_day(conn: sqlite3.Connection, day: dt.date, items: list[dict], pages: int, failed_hours: int = 0,
+             retries: int = 8) -> None:
+    """Write one day; retries on 'database is locked' (another collector on the same sqlite)."""
+    for attempt in range(retries):
+        try:
+            with conn:
+                for e in items:
+                    t = e["tournament"]
+                    conn.execute(
+                        """INSERT INTO ob_tournaments (id, name, country_id, level, city, country, surface, doubles, women)
+                           VALUES (:id, :name, :country_id, :level, :city, :country, :surface, :doubles, :women)
+                           ON CONFLICT(id) DO UPDATE SET name=excluded.name""",
+                        {"id": t["id"], "name": t["name"], "country_id": t.get("countryId"),
+                         **parse_tournament(t["name"])})
+                    comp = {c["id"]: c for c in e.get("competitors", [])}
+                    home_ids = e.get("homeCompetitorIds") or []
+                    home = next((comp[i] for i in home_ids if i in comp), None)
+                    away = next((c for i, c in comp.items() if i not in home_ids), None)
+                    stats = e.get("basicStatistics") or {}
+                    cur = stats.get("currentScore") or {}
+                    sets = [(s.get("homeScore"), s.get("awayScore")) for s in stats.get("scoresByPeriod") or []]
+                    conn.execute(
+                        """INSERT OR REPLACE INTO ob_events (id, tournament_id, day, scheduled_at, home_id, home,
+                               home_country_id, away_id, away, away_country_id, sets_home, sets_away, set_scores,
+                               status, completion_status, event_type, raw)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (e["id"], t["id"], day.isoformat(), e.get("eventDate"),
+                         home and home["id"], home and home["name"], home and home.get("countryId"),
+                         away and away["id"], away and away["name"], away and away.get("countryId"),
+                         cur.get("homeScore"), cur.get("awayScore"), json.dumps(sets), e.get("status"),
+                         e.get("completionStatus"), (e.get("eventType") or {}).get("name"),
+                         json.dumps(e, ensure_ascii=False)))
+                conn.execute(
+                    "INSERT OR REPLACE INTO ob_days (day, events, pages, failed_hours, fetched_at) VALUES (?,?,?,?,?)",
+                    (day.isoformat(), len(items), pages, failed_hours,
+                     dt.datetime.now(dt.timezone.utc).isoformat()))
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() or attempt + 1 >= retries:
+                raise
+            time.sleep(2 ** attempt)  # 1, 2, 4, … с

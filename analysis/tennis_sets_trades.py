@@ -22,6 +22,7 @@ from pmbot.maptiming import price_at, price_series  # noqa: E402
 from analysis.tennis_sets import (  # noqa: E402
     DOG_BANDS,
     FAV_BANDS,
+    SERIES_ORDER,
     SURF_ORDER,
     TIER_ORDER,
     band_dog,
@@ -186,9 +187,10 @@ def main() -> None:
         fb = band_fav(fav_p0) or "?"
         db = band_dog(1 / (1 - fav_p0)) or "?"
         surf = surface or "?"
-        tier = tier_of(level, series_of(raw))
-        tags = ["all", f"fav {fb}", f"dog {db}", f"surf {surf}", f"tier {tier}",
-                f"{db} × {surf}", f"{db} × {tier}"]
+        tour = series_of(raw)
+        tier = tier_of(level, tour)
+        tags = ["all", f"fav {fb}", f"dog {db}", f"surf {surf}", f"tier {tier}", f"tour {tour}",
+                f"{db} × {surf}", f"{db} × {tier}", f"{db} × {tour}", f"tour {tour} × {surf}"]
 
         if wins[0]:
             for g in tags:
@@ -207,8 +209,11 @@ def main() -> None:
         "dog odds": [f"dog {b[2]}" for b in DOG_BANDS],
         "surface": [f"surf {s}" for s in SURF_ORDER],
         "tier": [f"tier {t}" for t in TIER_ORDER],
+        "tour (ATP/WTA/ITF)": [f"tour {s}" for s in SERIES_ORDER],
         "dog × surface": [f"{b[2]} × {s}" for b in DOG_BANDS for s in SURF_ORDER],
         "dog × tier": [f"{b[2]} × {t}" for b in DOG_BANDS for t in TIER_ORDER],
+        "dog × tour": [f"{b[2]} × {s}" for b in DOG_BANDS for s in SERIES_ORDER],
+        "tour × surface": [f"tour {s} × {u}" for s in SERIES_ORDER for u in SURF_ORDER],
     }
 
     for name, label in (
@@ -222,19 +227,32 @@ def main() -> None:
         for cut, order in orders.items():
             if cut.startswith("dog ×") and name not in ("dog_close", "fav_comeback"):
                 continue
+            if cut == "tour × surface" and name not in ("dog_close", "fav_continue"):
+                continue
             print_roi(f"{name} / {cut}", cells, order, args.min_n)
 
     # side-by-side with mid R-23 headline
     print("\n=== dog_close vs mid R-23 (same logic, executable VWAP) ===")
     print(f"{'group':28} {'n':>5} {'mkt p':>7} {'win%':>7} {'ROI':>8}")
-    for key in ["all"] + [f"dog {b[2]}" for b in DOG_BANDS] + [f"surf {s}" for s in SURF_ORDER] + [
-        f"tier {t}" for t in ("slam", "masters", "challenger", "itf")
-    ]:
+    for key in (["all"] + [f"dog {b[2]}" for b in DOG_BANDS] + [f"surf {s}" for s in SURF_ORDER]
+                + [f"tier {t}" for t in ("slam", "masters", "challenger", "itf")]
+                + [f"tour {s}" for s in SERIES_ORDER]):
         a = strat["dog_close"].get(key)
         if not a or a.n < args.min_n:
             continue
         print(f"{key:28} {a.n:5d} {a.sum_p / a.n:7.3f} {100 * a.wins / a.n:6.1f}% "
               f"{100 * a.sum_ret / a.n:+7.1f}%")
+    print()
+
+    print("\n=== ATP vs WTA headline (trade VWAP) ===")
+    print(f"{'strategy':40} {'tour':6} {'n':>5} {'avg p':>7} {'win%':>7} {'ROI':>8}")
+    for name in ("dog_close", "fav_continue", "fav_comeback", "dog_upset"):
+        for tour in SERIES_ORDER:
+            a = strat[name].get(f"tour {tour}")
+            if not a or a.n < args.min_n:
+                continue
+            print(f"{name:40} {tour:6} {a.n:5d} {a.sum_p / a.n:7.3f} {100 * a.wins / a.n:6.1f}% "
+                  f"{100 * a.sum_ret / a.n:+7.1f}%")
     print()
 
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "data" / "cs2.sqlite"
 SPORTS = ("cs2", "dota2")             # esports: Polymarket + cybersport / PandaScore / OpenDota
-ALL_SPORTS = (*SPORTS, "tennis")     # Polymarket collectors and market-only analysis
+ALL_SPORTS = (*SPORTS, "tennis", "volleyball", "nfl", "nba", "nhl", "lol", "ufc", "fifa", "soccer")
 
 
 def db_path(sport: str = "cs2") -> Path:
@@ -495,6 +495,7 @@ def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=120)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=120000")  # ms; parallel collectors on one db
     conn.executescript(SCHEMA)
     for table, column, kind in MIGRATIONS:
         if column not in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:

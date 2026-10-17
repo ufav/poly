@@ -29,6 +29,7 @@ from pmbot.maptiming import price_at, price_series  # noqa: E402
 from analysis.tennis_sets import (  # noqa: E402
     DOG_BANDS,
     FAV_BANDS,
+    SERIES_ORDER,
     SURF_ORDER,
     TIER_ORDER,
     band_dog,
@@ -187,9 +188,11 @@ def main() -> None:
         fb = band_fav(fav_p0) or "?"
         db = band_dog(1 / (1 - fav_p0)) or "?"
         surf = surface or "?"
-        tier = tier_of(level, series_of(raw))
-        tags = ["all", f"fav {fb}", f"dog {db}", f"surf {surf}", f"tier {tier}",
-                f"{fb} × {surf}", f"{fb} × {tier}", f"{db} × {surf}", f"{db} × {tier}"]
+        tour = series_of(raw)
+        tier = tier_of(level, tour)
+        tags = ["all", f"fav {fb}", f"dog {db}", f"surf {surf}", f"tier {tier}", f"tour {tour}",
+                f"{fb} × {surf}", f"{fb} × {tier}", f"{db} × {surf}", f"{db} × {tier}",
+                f"{db} × {tour}"]
 
         fav_won_s1 = wins[0]
         if fav_won_s1:
@@ -212,10 +215,12 @@ def main() -> None:
         "dog odds": [f"dog {b[2]}" for b in DOG_BANDS],
         "surface": [f"surf {s}" for s in SURF_ORDER],
         "tier": [f"tier {t}" for t in TIER_ORDER],
+        "tour (ATP/WTA/ITF)": [f"tour {s}" for s in SERIES_ORDER],
         "fav × surface": [f"{b[2]} × {s}" for b in FAV_BANDS for s in SURF_ORDER],
         "fav × tier": [f"{b[2]} × {t}" for b in FAV_BANDS for t in TIER_ORDER],
         "dog × surface": [f"{b[2]} × {s}" for b in DOG_BANDS for s in SURF_ORDER],
         "dog × tier": [f"{b[2]} × {t}" for b in DOG_BANDS for t in TIER_ORDER],
+        "dog × tour": [f"{b[2]} × {s}" for b in DOG_BANDS for s in SERIES_ORDER],
     }
 
     for name, label in (

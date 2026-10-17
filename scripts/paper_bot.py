@@ -369,14 +369,15 @@ class Bot:
         if cur.rowcount == 0:  # already traded before a restart
             return
         price = fill["avg_price"] if status == "open" else book.get("ask")
+        # 📝 = ставка; ✅/❌ только на расчёте (выигрыш/проигрыш)
         if status == "unfilled":
-            mark, status_line = "❌", "не исполнено (пустой стакан)"
+            mark, status_line = "🚫", "не исполнено (пустой стакан)"
         elif status == "rejected":
             mark, status_line = "⚠️", "пропущено (ask противоречит счёту)"
         elif fill["filled"] < 0.999:
-            mark, status_line = "✅", f"частично {fill['filled']:.0%}"
+            mark, status_line = "📝", f"частично {fill['filled']:.0%}"
         else:
-            mark, status_line = "✅", "исполнено"
+            mark, status_line = "📝", "исполнено"
         self.tg.send(self._signal_msg(mark, rule, game["title"], self._context(s), team, stake, bankroll, price,
                                       status_line))
 
@@ -397,9 +398,23 @@ class Bot:
                 f"Событие: {title}\n"
                 f"Контекст: {context}\n"
                 f"Исход: {outcome}\n"
-                f"Ставка: {stake:.2f}$ ({self.stake_pct:g}% банка {bankroll:.2f}$)\n"
+                f"Ставка: {stake:.2f}$ ({self.stake_pct:g}% банка)\n"
+                f"Банк: {bankroll:.2f}$\n"
                 f"Кэф: {odds}\n"
                 f"Статус: {status_line}")
+
+    def _settle_msg(self, won: bool, rule: str, title: str, context: str, outcome: str,
+                    stake: float, pnl: float, bankroll: float | None) -> str:
+        mark = "✅" if won else "❌"
+        result = "зашла" if won else "не зашла"
+        bank = f"{bankroll:.2f}$" if bankroll is not None else "—"
+        return (f"{mark} Стратегия: {_rule_line(rule)}\n"
+                f"Событие: {title}\n"
+                f"Контекст: {context}\n"
+                f"Исход: {outcome} — {result}\n"
+                f"Ставка: {stake:.2f}$\n"
+                f"P&L: {pnl:+.2f}$\n"
+                f"Банк: {bank}")
 
     # ---------- order books ----------
     async def books_loop(self) -> None:
@@ -468,7 +483,7 @@ class Bot:
                      json.dumps(state, ensure_ascii=False), stake, take / bid, bid, None, 0.0, take / stake, "open"))
             score = " : ".join(f"{t} {n}" for t, n in state.get("rounds", {}).items()) or "?"
             self.tg.send(self._signal_msg(
-                "✅", rule, game["title"], f"карта {map_number}, счёт {score} (мейкер)", team, stake, bankroll, bid,
+                "📝", rule, game["title"], f"карта {map_number}, счёт {score} (мейкер)", team, stake, bankroll, bid,
                 f"исполнено {take:.2f}$ из {stake:.2f}$"))
             return
         tid, row_token, stake, shares, filled, status = row
@@ -503,14 +518,9 @@ class Bot:
                                       (payout, pnl, time.time(), tid))
                 title = self.games.get(gid, {}).get("title", gid)
                 place = "матч" if self.sport == "tennis" else f"карта {map_no}"
-                mark = "✅" if payout else "❌"
-                result = "выиграл" if payout else "проиграл"
-                self.tg.send(f"{mark} Стратегия: {_rule_line(rule)}\n"
-                             f"Событие: {title}\n"
-                             f"Контекст: {place}\n"
-                             f"Исход: {outcome} — {result}\n"
-                             f"Ставка: {stake * (filled or 0):.2f}$\n"
-                             f"P&L: {pnl:+.2f}$")
+                bankroll = store.bank(self.conn, rule)
+                self.tg.send(self._settle_msg(bool(payout), rule, title, place, outcome,
+                                              stake * (filled or 0), pnl, bankroll))
             await asyncio.sleep(120)
 
     # ---------- daily jobs ----------
