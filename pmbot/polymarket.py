@@ -12,6 +12,9 @@ DATA = "https://data-api.polymarket.com"
 CS2_SERIES_ID = 10310
 DOTA2_SERIES_ID = 10309
 SERIES = {"cs2": CS2_SERIES_ID, "dota2": DOTA2_SERIES_ID}
+# tennis singles: ATP (with Challengers), WTA, ITF (since 05.2026); doubles have no volume
+TENNIS_SERIES = {"atp": 10365, "wta": 10366, "itf": 11634}
+SPORT_SERIES = {**{k: (v,) for k, v in SERIES.items()}, "tennis": tuple(TENNIS_SERIES.values())}
 TRADES_PAGE = 500
 HISTORY_MARKET_TYPES = {"moneyline", "child_moneyline"}
 HISTORY_BEFORE_START = dt.timedelta(hours=6)
@@ -60,6 +63,7 @@ def _title_parts(title: str) -> tuple[int | None, str | None]:
 
 def save_event(conn: sqlite3.Connection, event: dict) -> None:
     best_of, tournament = _title_parts(event["title"])
+    tournament = tournament or (event.get("eventMetadata") or {}).get("league")  # tennis: 'US Open ATP: A vs B'
     moneyline = next((m for m in event.get("markets", []) if m.get("sportsMarketType") == "moneyline"), None)
     teams = json.loads(moneyline["outcomes"]) if moneyline else [None, None]
     raw = {k: v for k, v in event.items() if k != "markets"}
@@ -76,7 +80,7 @@ def save_event(conn: sqlite3.Connection, event: dict) -> None:
     )
     for m in event.get("markets", []):
         title = m.get("groupItemTitle") or ""
-        map_no = re.match(r"(?:Map|Game) (\d+)", title)
+        map_no = re.match(r"(?:Map|Game) (\d+)", title) or re.search(r"\bSet (\d+) Winner$", title)
         outcomes = json.loads(m.get("outcomes") or "[null, null]")
         tokens = json.loads(m.get("clobTokenIds") or "[null, null]")
         prices = json.loads(m.get("outcomePrices") or "[null, null]")
@@ -107,11 +111,14 @@ def fetch_price_history(http: HttpClient, token_id: str, start: dt.datetime) -> 
     return r.json().get("history", [])
 
 
-def collect_pending_histories(http: HttpClient, conn: sqlite3.Connection, limit: int | None = None) -> int:
+def collect_pending_histories(http: HttpClient, conn: sqlite3.Connection, limit: int | None = None,
+                              min_volume: float = 0) -> int:
+    """Minute histories of pending markets with volume >= min_volume (smaller ones stay pending)."""
     rows = conn.execute(
         """SELECT m.id, m.token_a, e.start_time FROM pm_markets m JOIN pm_events e ON e.id = m.event_id
            WHERE m.history_status = 'pending' AND m.token_a IS NOT NULL AND e.start_time IS NOT NULL
-           ORDER BY e.start_time""" + (f" LIMIT {int(limit)}" if limit else "")
+             AND m.volume >= ?
+           ORDER BY e.start_time""" + (f" LIMIT {int(limit)}" if limit else ""), (min_volume,)
     ).fetchall()
     for i, (market_id, token, start_time) in enumerate(rows, 1):
         history = fetch_price_history(http, token, parse_ts(start_time))

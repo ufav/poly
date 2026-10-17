@@ -42,9 +42,31 @@ CITY_UTC = {
     "рио-де-жанейро": -3, "сан-паулу": -3,
 }
 
+# English city names (Olimpbet / tennis-data); multi-zone countries only — else use country offset
+CITY_UTC_EN = {
+    "dallas": -6, "austin": -6, "houston": -6, "chicago": -6, "atlanta": -5, "new york": -5,
+    "washington": -5, "miami": -5, "orlando": -5, "boston": -5, "philadelphia": -5,
+    "las vegas": -8, "los angeles": -8, "seattle": -8, "san francisco": -8, "san diego": -8,
+    "phoenix": -7, "denver": -7, "indian wells": -8, "cincinnati": -5, "winston-salem": -5,
+    "toronto": -5, "montreal": -5, "vancouver": -8,
+    "sydney": 10, "melbourne": 10, "brisbane": 10, "perth": 8, "adelaide": 9.5,
+    "rio de janeiro": -3, "sao paulo": -3, "são paulo": -3,
+    "moscow": 3, "st petersburg": 3, "saint petersburg": 3,
+}
+
 
 def is_online(location: str | None) -> bool:
     return not location or not location.strip() or "онлайн" in location.lower()
+
+
+def city_utc(city: str | None) -> float | None:
+    """UTC offset by city name (Russian cybersport or English Olimpbet / tennis-data)."""
+    if not city or not city.strip():
+        return None
+    key = city.strip().lower()
+    if key in CITY_UTC:
+        return CITY_UTC[key]
+    return CITY_UTC_EN.get(key)
 
 
 def venue_utc(location: str | None, country_codes: dict[str, str]) -> float | None:
@@ -53,8 +75,9 @@ def venue_utc(location: str | None, country_codes: dict[str, str]) -> float | No
         return None
     parts = [p.strip() for p in location.split(",")]
     city = parts[0].lower()
-    if city in CITY_UTC:
-        return CITY_UTC[city]
+    off = city_utc(city)
+    if off is not None:
+        return off
     code = venue_country(location, country_codes)
     return COUNTRY_UTC.get(code) if code else None
 

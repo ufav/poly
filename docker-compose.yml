@@ -27,3 +27,20 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+  # Tennis: buy set-1 winner on moneyline (docs/research.md R-23b), own database data/live_tennis.sqlite
+  paper-bot-tennis:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PAPER_SPORT: tennis
+      PAPER_STAKE_PCT: "1"
+      PAPER_RULES: ""
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

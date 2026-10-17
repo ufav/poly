@@ -1,17 +1,18 @@
-"""Live recorder + paper trading bot of one sport, CS2 or Dota 2 (no real orders, no private key needed).
+"""Live recorder + paper trading bot of one sport: CS2, Dota 2, or tennis (no real orders, no private key needed).
 
 - discovery: open events of the sport from Gamma every 60 s (markets, tokens);
 - score: Polymarket sports WebSocket, every change stored with arrival time;
-- order book of the current map market every BOOK_INTERVAL s, stored on change;
+- order book of the current map / match market every BOOK_INTERVAL s, stored on change;
 - paper trades by pmbot/live/paper.py rules, filled on the real book after 1 s (Polymarket delay);
   CS2 - on the round score of the current map; Dota 2 - on the map score when the feed switches to the next map;
+  tennis - after set 1 (period S2+), buy set-1 winner on moneyline (R-23b);
 - paper maker (CS2 tier1): taker tape of the current map market polled every MAKER_INTERVAL s, bid fills simulated;
 - settlement from Gamma, Telegram notifications, daily summary;
 - CS2: daily cybersport.ru collection (first-half sides / rounds for later analysis).
 
 Stake = PAPER_STAKE_PCT % of the rule's own virtual bank (PAPER_BANK_USD at the first start + settled P&L).
 
-Env (all optional): PAPER_SPORT=cs2 (or dota2; database data/live.sqlite / data/live_dota2.sqlite),
+Env (all optional): PAPER_SPORT=cs2 (or dota2 / tennis; database data/live.sqlite / data/live_<sport>.sqlite),
 PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default all of paper.SPORT_RULES[sport]),
 BOOK_INTERVAL=10, MAKER_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
@@ -39,7 +40,7 @@ from pmbot.live import feeds, paper, report, store  # noqa: E402
 from pmbot.telegram import Telegram  # noqa: E402
 
 log = logging.getLogger("paper_bot")
-SPORT_LABEL = {"cs2": "CS2", "dota2": "Dota 2"}
+SPORT_LABEL = {"cs2": "CS2", "dota2": "Dota 2", "tennis": "Теннис"}
 
 
 class Bot:
@@ -52,7 +53,7 @@ class Bot:
         allowed = paper.SPORT_RULES[self.sport]
         names = [n.strip() for n in (os.getenv("PAPER_RULES") or ",".join(sorted(allowed))).split(",")]
         names = [n for n in names if n in allowed]
-        score_rules = paper.RULES | paper.DOTA_RULES
+        score_rules = paper.RULES | paper.DOTA_RULES | paper.TENNIS_RULES
         self.rules = {n: score_rules[n] for n in names if n in score_rules}
         self.band_rules = {n: paper.BAND_RULES[n] for n in names if n in paper.BAND_RULES}
         self.maker_rules = {n: paper.MAKER_RULES[n] for n in names if n in paper.MAKER_RULES}
@@ -68,7 +69,7 @@ class Bot:
         self.live: dict[int, dict] = {}         # game_id -> last WS item
         self.last_key: dict[int, tuple] = {}
         self.prematch: dict[int, dict[str, float]] = {}
-        self.seen_maps: dict[int, set[int]] = {}  # game_id -> map numbers seen live in this run
+        self.seen_maps: dict[int, set[int]] = {}  # game_id -> map/set numbers seen live in this run
         self.last_book: dict[str, tuple] = {}
         self.fired = {(s, g, m) for s, g, m in self.conn.execute(
             "SELECT strategy, game_id, map_number FROM paper_trades")}
@@ -80,11 +81,17 @@ class Bot:
         return [*self.rules, *self.band_rules, *self.maker_rules]
 
     def live_markets(self) -> list[tuple[int, dict, dict, int, dict]]:
-        """(game id, game, last WS item, map number, market deciding the current map) of every live game."""
+        """(game id, game, last WS item, map/set number, market) of every live game."""
         out = []
         for gid, item in list(self.live.items()):
             game = self.games.get(gid)
             if not game or not item.get("live") or item.get("ended"):
+                continue
+            if self.sport == "tennis":
+                set_no = paper.tennis_period_set(item.get("period")) or 1
+                market = paper.moneyline_market(game)
+                if market:
+                    out.append((gid, game, item, set_no, market))
                 continue
             parsed = paper.parse_score(item.get("score"))
             try:
@@ -101,7 +108,9 @@ class Bot:
         http = HttpClient(min_interval=0.3)
         while True:
             try:
-                events = await asyncio.to_thread(feeds.open_events, http, 2, polymarket.SERIES[self.sport])
+                events = []
+                for series_id in polymarket.SPORT_SERIES[self.sport]:
+                    events += await asyncio.to_thread(feeds.open_events, http, 2, series_id)
                 for e in events:
                     g = feeds.parse_event(e)
                     if not g["game_id"] or not g["markets"]:
@@ -135,6 +144,8 @@ class Bot:
             if item.get("live") and not item.get("ended"):
                 if self.sport == "dota2":
                     asyncio.create_task(self.evaluate_maps(gid, item))
+                elif self.sport == "tennis":
+                    asyncio.create_task(self.evaluate_tennis(gid, item))
                 else:
                     asyncio.create_task(self.evaluate(gid, item))
             if item.get("ended"):
@@ -226,6 +237,37 @@ class Bot:
                 self.fired.add((name, gid, map_number))
                 await self.open_trade(name, gid, game, state, team, maps)
 
+    async def evaluate_tennis(self, gid: int, item: dict) -> None:
+        """After set 1 (R-23b): buy set-1 winner on moneyline when the feed enters S2+.
+        Requires set 1 seen live in this run (restart mid-S2 is skipped)."""
+        game = self.games[gid]
+        set_no = paper.tennis_period_set(item.get("period"))
+        if not set_no:
+            return
+        seen = self.seen_maps.setdefault(gid, set())
+        seen.add(set_no)
+        if set_no < 2 or 1 not in seen:
+            return
+        sets = paper.parse_tennis_sets(item.get("score"))
+        teams = self.team_names(game, item)
+        if not sets or not teams or not paper.tennis_set_complete(*sets[0]):
+            return
+        map_number = 1  # one signal per match after set 1
+        if all((name, gid, map_number) in self.fired for name in self.rules):
+            return
+        prematch = await self.get_prematch(gid, game)
+        if not prematch:
+            return
+        home_won = sets[0][0] > sets[0][1]
+        maps = {teams[0]: int(home_won), teams[1]: int(not home_won)}
+        games = {teams[0]: sets[0][0], teams[1]: sets[0][1]}
+        state = paper.MapState(map_number, games, maps, prematch)
+        for name, rule in self.rules.items():
+            team = rule(state)
+            if team and (name, gid, map_number) not in self.fired:
+                self.fired.add((name, gid, map_number))
+                await self.open_tennis_trade(name, gid, game, state, team)
+
     async def fetch_book(self, token: str) -> dict | None:
         async with self.trade_lock:
             try:
@@ -240,6 +282,17 @@ class Bot:
         token = paper.token_for(market, team) if market else None
         if not token:
             log.info("%s: no market for %s map %s", rule, game["title"], s.map_number)
+            return
+        await asyncio.sleep(1)
+        book = await self.fetch_book(token)
+        if book:
+            self.paper_buy(rule, gid, game, s, team, market, token, book)
+
+    async def open_tennis_trade(self, rule: str, gid: int, game: dict, s: paper.MapState, team: str) -> None:
+        market = paper.moneyline_market(game)
+        token = paper.token_for(market, team) if market else None
+        if not token:
+            log.info("%s: no moneyline for %s", rule, game["title"])
             return
         await asyncio.sleep(1)
         book = await self.fetch_book(token)
@@ -290,8 +343,13 @@ class Bot:
             return
         if self.sport == "dota2":
             score = "по картам " + " : ".join(f"{t} {n}" for t, n in s.maps.items())
+            where = f"Карта {s.map_number}, счёт: {score}"
+        elif self.sport == "tennis":
+            score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
+            where = f"После сета 1, счёт сета: {score}"
         else:
             score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
+            where = f"Карта {s.map_number}, счёт: {score}"
         fav = max(s.prematch, key=s.prematch.get)
         if status == "unfilled":
             result = f"Не исполнено: в стакане {team} нет заявок на продажу"
@@ -300,7 +358,7 @@ class Bot:
         else:
             result = (f"Покупка (бумажная): {team} по {fill['avg_price']:.3f} (лучший ask {book['ask']}), "
                       f"исполнено {fill['filled']:.0%} от {stake:.2f}$ ({self.stake_pct:g}% банка {bankroll:.2f}$)")
-        self.tg.send(f"📝 {rule}\n{game['title']}\nКарта {s.map_number}, счёт: {score}\n"
+        self.tg.send(f"📝 {rule}\n{game['title']}\n{where}\n"
                      f"Фаворит до матча: {fav} {s.prematch[fav]:.2f}\n{result}")
 
     # ---------- order books ----------
@@ -404,7 +462,8 @@ class Bot:
                     self.conn.execute("UPDATE paper_trades SET status='settled', payout=?, pnl=?, settled_at=? WHERE id=?",
                                       (payout, pnl, time.time(), tid))
                 title = self.games.get(gid, {}).get("title", gid)
-                self.tg.send(f"{'✅' if payout else '❌'} {rule}\n{title}, карта {map_no}: {outcome} "
+                place = "матч" if self.sport == "tennis" else f"карта {map_no}"
+                self.tg.send(f"{'✅' if payout else '❌'} {rule}\n{title}, {place}: {outcome} "
                              f"{'выиграл' if payout else 'проиграл'}\nP&L {pnl:+.2f}$")
             await asyncio.sleep(120)
 

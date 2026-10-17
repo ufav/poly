@@ -14,18 +14,20 @@ from pmbot.polymarket import CLOB, CS2_SERIES_ID, GAMMA, _title_parts, parse_ts
 
 SPORTS_WS = "wss://sports-api.polymarket.com/ws"
 CS2_LEAGUES = {"cs2", "csgo"}
-LEAGUES = {"cs2": CS2_LEAGUES, "dota2": {"dota2"}}  # leagueAbbreviation of the sports WebSocket
+# leagueAbbreviation of the sports WebSocket; tennis ATP/WTA/ITF use atp/wta/itf
+LEAGUES = {"cs2": CS2_LEAGUES, "dota2": {"dota2"}, "tennis": {"atp", "wta", "itf"}}
 log = logging.getLogger(__name__)
 
 
 def parse_event(event: dict) -> dict:
     best_of, tournament = _title_parts(event["title"])
+    tournament = tournament or (event.get("eventMetadata") or {}).get("league")
     markets = []
     for m in event.get("markets", []):
         mtype = m.get("sportsMarketType")
         if mtype not in ("moneyline", "child_moneyline"):
             continue
-        map_no = re.match(r"(?:Map|Game) (\d+)", m.get("groupItemTitle") or "")
+        map_no = re.match(r"(?:Map|Game|Set) (\d+)", m.get("groupItemTitle") or "")
         outcomes = json.loads(m.get("outcomes") or "[null, null]")
         tokens = json.loads(m.get("clobTokenIds") or "[null, null]")
         markets.append({
@@ -87,7 +89,8 @@ def prematch_price(http: HttpClient, token: str, start_time: str | None) -> floa
 
 async def sports_updates(leagues: set[str] = CS2_LEAGUES) -> AsyncIterator[dict]:
     """Items of the leagues (CS2 by default) from the sports WebSocket: gameId, homeTeam, awayTeam, score, period,
-    status, live, ended. Score is 'rounds|maps|BoN' (CS2) or 'kills|maps|BoN' (Dota 2).
+    status, live, ended. Score is 'rounds|maps|BoN' (CS2), 'kills|maps|BoN' (Dota 2), or '6-3, 4-3' with period
+    'S1'/'S2'/'S3' (tennis).
     Reconnects forever; the server sends 'ping' text frames that must be answered with 'pong'."""
     delay = 1
     while True:

@@ -3,7 +3,7 @@
 Default scope: events linked to cybersport matches with rounds (the samples of R-8 / R-12) plus all BO3 events
 (R-13) with --all. Re-running is safe (markets with trades_status set are skipped).
 
-  python scripts/collect_trades.py [--all] [--limit N] [--sport dota2]
+  python scripts/collect_trades.py [--all] [--limit N] [--sport dota2|tennis] [--min-volume USD]
 """
 
 import argparse
@@ -20,7 +20,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--all", action="store_true", help="all CS2 events, not only those with round data")
     ap.add_argument("--limit", type=int)
-    ap.add_argument("--sport", choices=storage.SPORTS, default="cs2", help="dota2: always all events")
+    ap.add_argument("--sport", choices=storage.ALL_SPORTS, default="cs2", help="dota2 / tennis: always all events")
+    ap.add_argument("--min-volume", type=float, default=0, help="skip markets with smaller volume (USD)")
     args = ap.parse_args()
     conn = storage.connect(storage.db_path(args.sport))
     scope = "" if args.all or args.sport != "cs2" else (
@@ -28,8 +29,9 @@ def main() -> None:
     rows = conn.execute(
         f"""SELECT m.id, m.condition_id FROM pm_markets m JOIN pm_events e ON e.id = m.event_id
             WHERE m.market_type IN ('moneyline', 'child_moneyline') AND m.condition_id IS NOT NULL
-              AND m.trades_status IS NULL {scope}
-            ORDER BY e.start_time DESC""" + (f" LIMIT {int(args.limit)}" if args.limit else "")).fetchall()
+              AND m.trades_status IS NULL AND m.volume >= ? {scope}
+            ORDER BY e.start_time DESC""" + (f" LIMIT {int(args.limit)}" if args.limit else ""),
+        (args.min_volume,)).fetchall()
     print(f"markets to fetch: {len(rows)}", flush=True)
     http = HttpClient(min_interval=0.1)
     n_trades = 0

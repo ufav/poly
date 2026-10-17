@@ -11,8 +11,10 @@ USER_AGENT = (
 class HttpClient:
     """httpx wrapper with a browser User-Agent, polite pacing and retries."""
 
-    def __init__(self, min_interval: float = 0.15, retries: int = 5, timeout: float = 30):
-        self._client = httpx.Client(headers={"User-Agent": USER_AGENT, "Accept": "application/json"}, timeout=timeout)
+    def __init__(self, min_interval: float = 0.15, retries: int = 5, timeout: float = 30,
+                 headers: dict | None = None):
+        self._client = httpx.Client(headers={"User-Agent": USER_AGENT, "Accept": "application/json", **(headers or {})},
+                                    timeout=timeout, follow_redirects=True)
         self._min_interval = min_interval
         self._retries = retries
         self._last = 0.0

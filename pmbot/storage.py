@@ -2,7 +2,8 @@ import sqlite3
 from pathlib import Path
 
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "data" / "cs2.sqlite"
-SPORTS = ("cs2", "dota2")
+SPORTS = ("cs2", "dota2")             # esports: Polymarket + cybersport / PandaScore / OpenDota
+ALL_SPORTS = (*SPORTS, "tennis")     # Polymarket collectors and market-only analysis
 
 
 def db_path(sport: str = "cs2") -> Path:
@@ -374,6 +375,105 @@ CREATE TABLE IF NOT EXISTS dota_map_links (
     method       TEXT
 );
 CREATE INDEX IF NOT EXISTS dota_map_links_pm ON dota_map_links(pm_game_id, map_number);
+
+-- tennis: Olimpbet results (pmbot/olimpbet.py); tournament name parsed to level / city / country / surface
+CREATE TABLE IF NOT EXISTS ob_tournaments (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT,
+    country_id  INTEGER,
+    level       TEXT,
+    city        TEXT,
+    country     TEXT,
+    surface     TEXT,
+    doubles     INTEGER,
+    women       INTEGER
+);
+CREATE TABLE IF NOT EXISTS ob_events (
+    id                 INTEGER PRIMARY KEY,
+    tournament_id      INTEGER,
+    day                TEXT,
+    scheduled_at       TEXT,
+    home_id            INTEGER,
+    home               TEXT,
+    home_country_id    INTEGER,
+    away_id            INTEGER,
+    away               TEXT,
+    away_country_id    INTEGER,
+    sets_home          INTEGER,
+    sets_away          INTEGER,
+    set_scores         TEXT,
+    status             TEXT,
+    completion_status  TEXT,
+    event_type         TEXT,
+    raw                TEXT
+);
+CREATE INDEX IF NOT EXISTS ob_events_day ON ob_events(day);
+CREATE TABLE IF NOT EXISTS ob_days (day TEXT PRIMARY KEY, events INTEGER, pages INTEGER, fetched_at TEXT);
+
+-- tennis: tennis-data.co.uk ATP / WTA main tour (pmbot/tennisdata.py); odds JSON: B365W/L, PSW/L, MaxW/L, AvgW/L, BFEW/L
+CREATE TABLE IF NOT EXISTS td_matches (
+    tour        TEXT,
+    day         TEXT,
+    location    TEXT,
+    tournament  TEXT,
+    series      TEXT,
+    court       TEXT,
+    surface     TEXT,
+    round       TEXT,
+    best_of     INTEGER,
+    winner      TEXT,
+    loser       TEXT,
+    wrank       REAL,
+    lrank       REAL,
+    wpts        REAL,
+    lpts        REAL,
+    set_scores  TEXT,
+    wsets       INTEGER,
+    lsets       INTEGER,
+    comment     TEXT,
+    odds        TEXT,
+    PRIMARY KEY (tour, day, winner, loser)
+) WITHOUT ROWID;
+
+-- tennis: Polymarket ↔ Olimpbet ↔ tennis-data + features (pmbot/tennis_join.py)
+CREATE TABLE IF NOT EXISTS tennis_links (
+    pm_event_id     TEXT PRIMARY KEY,
+    ob_event_id     INTEGER,
+    td_tour         TEXT,
+    td_day          TEXT,
+    td_winner       TEXT,
+    td_loser        TEXT,
+    method          TEXT,
+    side_flip       INTEGER,
+    surface         TEXT,
+    court           TEXT,
+    level           TEXT,
+    city            TEXT,
+    country         TEXT,
+    round           TEXT,
+    best_of         INTEGER,
+    a_rank          REAL,
+    b_rank          REAL,
+    a_country       TEXT,
+    b_country       TEXT,
+    venue_country   TEXT,
+    a_home          INTEGER,
+    b_home          INTEGER,
+    a_jetlag        REAL,
+    b_jetlag        REAL,
+    a_matches_7d    INTEGER,
+    b_matches_7d    INTEGER,
+    a_sets_7d       INTEGER,
+    b_sets_7d       INTEGER,
+    a_matches_14d   INTEGER,
+    b_matches_14d   INTEGER,
+    a_sets_14d      INTEGER,
+    b_sets_14d      INTEGER,
+    odds            TEXT,
+    volume          REAL
+);
+CREATE INDEX IF NOT EXISTS tennis_links_ob ON tennis_links(ob_event_id);
+CREATE INDEX IF NOT EXISTS tennis_links_td ON tennis_links(td_tour, td_day, td_winner, td_loser);
 """
 
 # columns added after the first release: (table, column, type)
@@ -387,6 +487,7 @@ MIGRATIONS = [
     ("cs_matches", "prize_pool", "INTEGER"),
     ("cs_matches", "bracket", "TEXT"),
     ("cs_matches", "round_name", "TEXT"),
+    ("ob_days", "failed_hours", "INTEGER"),
 ]
 
 

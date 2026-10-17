@@ -1,6 +1,6 @@
-"""Paper trading report from data/live.sqlite (CS2) or data/live_dota2.sqlite (--sport dota2).
+"""Paper trading report from data/live.sqlite (CS2) or data/live_<sport>.sqlite (--sport dota2|tennis).
 
-  python scripts/paper_report.py [--sport dota2] [--trades 20]
+  python scripts/paper_report.py [--sport dota2|tennis] [--trades 20]
 """
 
 import argparse
@@ -15,7 +15,7 @@ from pmbot.live import report, store  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sport", default="cs2", choices=("cs2", "dota2"))
+    ap.add_argument("--sport", default="cs2", choices=("cs2", "dota2", "tennis"))
     ap.add_argument("--trades", type=int, default=20, help="show last N trades")
     args = ap.parse_args()
     conn = store.connect(store.live_db(args.sport))

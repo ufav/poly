@@ -5,6 +5,7 @@ halftime rules at 12-13 rounds played (MR12, one missed WebSocket update tolerat
 Price rules (tier1 only): a taker buy of the side priced in a band at the half, and a paper maker whose bid on the
 favourite is filled from the taker tape (one position per map, up to the stake).
 Dota 2 (tier1 BO3, R-20): at the switch to map 2, buy the side that lost map 1 by its match price at scheduled start.
+Tennis (R-23b): after set 1 ends (WS period S2+, set-1 score complete), buy the set-1 winner on the match moneyline.
 """
 
 import json
@@ -80,6 +81,16 @@ def map1_loser(lo: float, hi: float):
     return rule
 
 
+def set1_winner(lo: float, hi: float):
+    """After set 1: buy the set-1 winner if its match price at scheduled start is in [lo, hi)."""
+    def rule(s: MapState) -> str | None:
+        if s.map_number != 1 or sorted(s.maps.values()) != [0, 1]:
+            return None
+        team = max(s.maps, key=s.maps.get)
+        return team if lo <= s.prematch[team] < hi else None
+    return rule
+
+
 RULES = {
     "fav_comeback_half": fav_comeback(0.70, range(2, 5)),
     "fav_comeback_wide": fav_comeback(0.60, range(2, 7)),
@@ -101,7 +112,18 @@ DOTA_RULES = {
     "dota_dog3_m2": map1_loser(0.30, 0.40),
     "dota_loser_m2": map1_loser(0.0, 1.01),
 }
-SPORT_RULES = {"cs2": set(RULES) | set(BAND_RULES) | set(MAKER_RULES), "dota2": set(DOTA_RULES)}
+
+# Tennis moneyline after set 1 (R-23b): buy set-1 winner (any / prematch dog / prematch fav)
+TENNIS_RULES = {
+    "tennis_s1_winner": set1_winner(0.0, 1.01),
+    "tennis_dog_s1": set1_winner(0.0, 0.50),
+    "tennis_fav_s1": set1_winner(0.50, 1.01),
+}
+SPORT_RULES = {
+    "cs2": set(RULES) | set(BAND_RULES) | set(MAKER_RULES),
+    "dota2": set(DOTA_RULES),
+    "tennis": set(TENNIS_RULES),
+}
 
 
 def is_tier1(game: dict, sport: str = "cs2") -> bool:
@@ -187,6 +209,41 @@ def parse_maps(score: str | None) -> tuple[int, int] | None:
     except ValueError:
         return None
     return a, b
+
+
+def parse_tennis_sets(score: str | None) -> list[tuple[int, int]] | None:
+    """'6-3, 4-3' / '4-6, 0-0' -> [(6, 3), (4, 3)] games per set in home-away order."""
+    if not score or "|" in score:
+        return None
+    sets = []
+    for part in score.split(","):
+        part = part.strip()
+        if "-" not in part:
+            return None
+        try:
+            a, b = (int(x) for x in part.split("-", 1))
+        except ValueError:
+            return None
+        sets.append((a, b))
+    return sets or None
+
+
+def tennis_set_complete(home: int, away: int) -> bool:
+    """Standard set: lead by 2 at 6+, or 7 (tiebreak / 7-5)."""
+    hi, lo = max(home, away), min(home, away)
+    return (hi >= 6 and hi - lo >= 2) or hi == 7
+
+
+def tennis_period_set(period: str | None) -> int | None:
+    """'S1' / 'S2' / 'S3' -> 1/2/3."""
+    m = str(period or "").strip().upper()
+    if len(m) >= 2 and m[0] == "S" and m[1:].isdigit():
+        return int(m[1:])
+    return None
+
+
+def moneyline_market(game: dict) -> dict | None:
+    return next((m for m in game["markets"] if m["market_type"] == "moneyline"), None)
 
 
 def map_market(game: dict, map_number: int, maps_won: tuple[int, int]) -> dict | None:

@@ -14,11 +14,14 @@ pmbot/                    пакет с переиспользуемым код�
   opendota.py             OpenDota: игры Dota 2 — драфт, игроки, золото/опыт по минутам, объекты, логи
   dota_join.py            связка карт Dota: Polymarket (game_id + номер карты) ↔ OpenDota ↔ cybersport
   maptiming.py            оценка начала/конца карты по траектории цены (смещена, см. R-6; есть PandaScore)
+  olimpbet.py             Olimpbet JSON API: результаты тенниса по дням, разбор турнира (уровень, город, страна, покрытие)
+  tennisdata.py           tennis-data.co.uk: годовые xlsx ATP/WTA (раунд, рейтинг, кэфы), чтение xlsx без зависимостей
+  tennis_join.py          связка Polymarket ↔ Olimpbet ↔ tennis-data + признаки (покрытие, дом, джетлаг, усталость, кэфы)
   tiers.py                уровень турнира по названию (tier1 / tier2+ / квалификации) — анализ и бот
   telegram.py             уведомления (выключены без TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
   live/                   бот-регистратор и бумажная торговля
     feeds.py              sports WebSocket (счёт), Gamma (матчи, рынки, расчёт), CLOB /book
-    store.py              база data/live.sqlite (CS2), data/live_dota2.sqlite (Dota 2)
+    store.py              база data/live.sqlite (CS2), data/live_<sport>.sqlite (dota2 / tennis)
     paper.py              правила (по счёту, по цене, мейкер; Dota — по счёту карт), симуляция исполнения по стакану / ленте, расчёт
     report.py             сводка по правилам
 scripts/
@@ -30,15 +33,22 @@ scripts/
   collect_pandascore.py   PandaScore для всех матчей Polymarket (+ все прошлые матчи с --since; нужен PANDASCORE_ACCESS_TOKEN)
   collect_opendota.py     OpenDota: все лиговые игры Dota 2 (SQL explorer пачками) + недостающие по Steam id cybersport
   link_dota.py            пересборка dota_map_links
+  collect_olimpbet.py     теннис: результаты Olimpbet по дням (медленно, пауза ~4 с; повторный запуск докачивает)
+  collect_tennisdata.py   теннис: tennis-data.co.uk ATP/WTA за годы
+  collect_tennis.bat      теннис одной командой: цены Polymarket / trades / olimpbet / tennisdata / link
+  link_tennis.py          пересборка tennis_links (после collect_*)
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков
-  paper_bot.py            бот: регистратор live-матчей + бумажные сделки (запускается в Docker; PAPER_SPORT=cs2 / dota2)
-  paper_report.py         отчёт по бумажным сделкам (--sport dota2)
+  paper_bot.py            бот: регистратор live-матчей + бумажные сделки (Docker; PAPER_SPORT=cs2 / dota2 / tennis)
+  paper_report.py         отчёт по бумажным сделкам (--sport dota2|tennis)
   research/               разовые исследовательские скрипты
 analysis/                 проверки гипотез (результаты — docs/research.md)
 data/
   cs2.sqlite              основная база
   dota2.sqlite            Dota 2: та же схема (`storage.db_path("dota2")`; сборщики и анализ — `--sport dota2`)
+  tennis.sqlite           теннис ATP/WTA/ITF (`collect_tennis.bat`): pm_* (`--sport tennis` у collect_polymarket / collect_trades),
+                          ob_* — Olimpbet (турнир: город/страна/покрытие; матчи), td_matches — tennis-data.co.uk,
+                          tennis_links — связка трёх источников + признаки (D-20)
   live/                   записи живых матчей (jsonl)
 docs/                     CJM, архитектура, бэклог
 ```
@@ -88,6 +98,8 @@ docs/                     CJM, архитектура, бэклог
 База `data/live.sqlite`: `live_games`, `live_markets`, `live_scores`, `live_books`, `paper_trades` (статусы `open` / `settled` / `unfilled` / `rejected` — ask противоречит счёту / `invalid` — помечено вручную, в отчёт не идёт), `paper_bank`.
 
 Dota 2 — тот же бот вторым контейнером `paper-bot-dota` (`PAPER_SPORT=dota2`, `PAPER_STAKE_PCT=1`, все правила Доты; база `data/live_dota2.sqlite`, свои банки): Gamma series 10309, WebSocket лиги `dota2` (счёт `убийства|карты|BoN`, у части кадров убийства «000-000»). Правила `paper.DOTA_RULES` (R-20) — только tier1 BO3: когда фид переключается на карту 2, покупка проигравшего карту 1 на карту 2 (по кэфу матча до начала: 2.0–2.5, 2.5–3.33, любой). Срабатывают, только если бот в этом запуске видел карту 1 (после перезапуска посреди карты 2 — пропуск). Сбор cybersport в контейнере Доты не запускается. Отчёт: `docker compose exec paper-bot-dota python scripts/paper_report.py --sport dota2`.
+
+Теннис — третий контейнер `paper-bot-tennis` (`PAPER_SPORT=tennis`, `PAPER_STAKE_PCT=1`, база `data/live_tennis.sqlite`): Gamma series ATP/WTA/ITF (10365/10366/11634), WebSocket лиги `atp`/`wta`/`itf` (счёт `6-3, 4-3`, период `S1`/`S2`/`S3`). Правила `paper.TENNIS_RULES` (R-23b): когда фид переходит на сет 2 и сет 1 завершён — покупка победителя сета 1 на moneyline матча (`tennis_s1_winner` любой; `tennis_dog_s1` прематч-аутсайдер; `tennis_fav_s1` прематч-фаворит). Нужен живой сет 1 в этом запуске (рестарт посреди S2 — пропуск). Отчёт: `docker compose exec paper-bot-tennis python scripts/paper_report.py --sport tennis`.
 
 ### Деплой (Linux + Docker)
 
