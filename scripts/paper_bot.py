@@ -41,6 +41,33 @@ from pmbot.telegram import Telegram  # noqa: E402
 
 log = logging.getLogger("paper_bot")
 SPORT_LABEL = {"cs2": "CS2", "dota2": "Dota 2", "tennis": "Теннис"}
+RULE_LABEL = {
+    "fav_comeback_half": "CS2: камбэк фаворита на перерыве",
+    "fav_comeback_wide": "CS2: камбэк фаворита (широкий)",
+    "leader_half": "CS2: лидер на перерыве +4",
+    "leader_half6": "CS2: лидер на перерыве +6",
+    "leader_late": "CS2: лидер во 2-й половине",
+    "fav_band_t1": "CS2: фаворит 0.70–0.92 на перерыве",
+    "maker_t1": "CS2: мейкер на фаворита tier1",
+    "dota_dog_m2": "Dota: аутсайдер 2.0–2.5 после карты 1",
+    "dota_dog3_m2": "Dota: аутсайдер 2.5–3.33 после карты 1",
+    "dota_loser_m2": "Dota: проигравший карту 1 на карту 2",
+    "tennis_s1_winner": "Теннис: победитель сета 1",
+    "tennis_dog_s1": "Теннис: аутсайдер после своего S1",
+    "tennis_fav_s1": "Теннис: фаворит после своего S1",
+}
+
+
+def _odds(price: float | None) -> str:
+    """Decimal odds from Polymarket price (0–1)."""
+    if not price or price <= 0:
+        return "—"
+    return f"{1 / price:.2f}"
+
+
+def _rule_line(rule: str) -> str:
+    label = RULE_LABEL.get(rule)
+    return f"{label} ({rule})" if label else rule
 
 
 class Bot:
@@ -341,25 +368,38 @@ class Bot:
                  fill["fee"], fill["filled"], status))
         if cur.rowcount == 0:  # already traded before a restart
             return
-        if self.sport == "dota2":
-            score = "по картам " + " : ".join(f"{t} {n}" for t, n in s.maps.items())
-            where = f"Карта {s.map_number}, счёт: {score}"
-        elif self.sport == "tennis":
-            score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
-            where = f"После сета 1, счёт сета: {score}"
-        else:
-            score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
-            where = f"Карта {s.map_number}, счёт: {score}"
-        fav = max(s.prematch, key=s.prematch.get)
+        price = fill["avg_price"] if status == "open" else book.get("ask")
         if status == "unfilled":
-            result = f"Не исполнено: в стакане {team} нет заявок на продажу"
+            mark, status_line = "❌", "не исполнено (пустой стакан)"
         elif status == "rejected":
-            result = f"Пропущено: ask {book['ask']} противоречит счёту (вероятно, сбой фида)"
+            mark, status_line = "⚠️", "пропущено (ask противоречит счёту)"
+        elif fill["filled"] < 0.999:
+            mark, status_line = "✅", f"частично {fill['filled']:.0%}"
         else:
-            result = (f"Покупка (бумажная): {team} по {fill['avg_price']:.3f} (лучший ask {book['ask']}), "
-                      f"исполнено {fill['filled']:.0%} от {stake:.2f}$ ({self.stake_pct:g}% банка {bankroll:.2f}$)")
-        self.tg.send(f"📝 {rule}\n{game['title']}\n{where}\n"
-                     f"Фаворит до матча: {fav} {s.prematch[fav]:.2f}\n{result}")
+            mark, status_line = "✅", "исполнено"
+        self.tg.send(self._signal_msg(mark, rule, game["title"], self._context(s), team, stake, bankroll, price,
+                                      status_line))
+
+    def _context(self, s: paper.MapState) -> str:
+        if self.sport == "dota2":
+            score = " : ".join(f"{t} {n}" for t, n in s.maps.items())
+            return f"карта {s.map_number}, по картам {score}"
+        if self.sport == "tennis":
+            score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
+            return f"после сета 1 ({score})"
+        score = " : ".join(f"{t} {n}" for t, n in s.rounds.items())
+        return f"карта {s.map_number}, счёт {score}"
+
+    def _signal_msg(self, mark: str, rule: str, title: str, context: str, outcome: str, stake: float,
+                    bankroll: float, price: float | None, status_line: str) -> str:
+        odds = f"{_odds(price)} (цена {price:.3f})" if price else "—"
+        return (f"{mark} Стратегия: {_rule_line(rule)}\n"
+                f"Событие: {title}\n"
+                f"Контекст: {context}\n"
+                f"Исход: {outcome}\n"
+                f"Ставка: {stake:.2f}$ ({self.stake_pct:g}% банка {bankroll:.2f}$)\n"
+                f"Кэф: {odds}\n"
+                f"Статус: {status_line}")
 
     # ---------- order books ----------
     async def books_loop(self) -> None:
@@ -427,9 +467,9 @@ class Bot:
                     (rule, gid, game["event_id"], market["market_id"], token, team, map_number, time.time(),
                      json.dumps(state, ensure_ascii=False), stake, take / bid, bid, None, 0.0, take / stake, "open"))
             score = " : ".join(f"{t} {n}" for t, n in state.get("rounds", {}).items()) or "?"
-            self.tg.send(f"🧲 {rule}\n{game['title']}\nКарта {map_number}, счёт: {score}\n"
-                         f"Заявка на покупку {team} по {bid:.2f} исполнена на {take:.2f}$ из {stake:.2f}$ "
-                         f"({self.stake_pct:g}% банка {bankroll:.2f}$)")
+            self.tg.send(self._signal_msg(
+                "✅", rule, game["title"], f"карта {map_number}, счёт {score} (мейкер)", team, stake, bankroll, bid,
+                f"исполнено {take:.2f}$ из {stake:.2f}$"))
             return
         tid, row_token, stake, shares, filled, status = row
         spent = stake * (filled or 0)
@@ -463,8 +503,14 @@ class Bot:
                                       (payout, pnl, time.time(), tid))
                 title = self.games.get(gid, {}).get("title", gid)
                 place = "матч" if self.sport == "tennis" else f"карта {map_no}"
-                self.tg.send(f"{'✅' if payout else '❌'} {rule}\n{title}, {place}: {outcome} "
-                             f"{'выиграл' if payout else 'проиграл'}\nP&L {pnl:+.2f}$")
+                mark = "✅" if payout else "❌"
+                result = "выиграл" if payout else "проиграл"
+                self.tg.send(f"{mark} Стратегия: {_rule_line(rule)}\n"
+                             f"Событие: {title}\n"
+                             f"Контекст: {place}\n"
+                             f"Исход: {outcome} — {result}\n"
+                             f"Ставка: {stake * (filled or 0):.2f}$\n"
+                             f"P&L: {pnl:+.2f}$")
             await asyncio.sleep(120)
 
     # ---------- daily jobs ----------
@@ -489,8 +535,10 @@ class Bot:
         banks = {n: store.bank(self.conn, n) for n in self.all_rules}
         log.info("%s rules: %s, stake %g%% of bank, telegram %s", self.sport, banks, self.stake_pct,
                  "on" if self.tg.enabled else "off")
-        self.tg.send(f"🤖 Бумажный бот {SPORT_LABEL[self.sport]} запущен. Ставка {self.stake_pct:g}% от банка правила.\nБанки: "
-                     + ", ".join(f"{n} {b:.2f}$" for n, b in banks.items()))
+        banks_lines = "\n".join(f"• {_rule_line(n)}: {b:.2f}$" for n, b in banks.items())
+        self.tg.send(f"🤖 Бот {SPORT_LABEL[self.sport]} запущен\n"
+                     f"Ставка: {self.stake_pct:g}% от банка правила\n"
+                     f"Банки:\n{banks_lines}")
         await asyncio.gather(self.discovery_loop(), self.ws_loop(), self.books_loop(), self.maker_loop(),
                              self.settle_loop(), self.daily_loop())
 
