@@ -404,15 +404,17 @@ class Bot:
                 f"Статус: {status_line}")
 
     def _settle_msg(self, won: bool, rule: str, title: str, context: str, outcome: str,
-                    stake: float, pnl: float, bankroll: float | None) -> str:
+                    stake: float, pnl: float, bankroll: float | None, price: float | None) -> str:
         mark = "✅" if won else "❌"
         result = "зашла" if won else "не зашла"
         bank = f"{bankroll:.2f}$" if bankroll is not None else "—"
+        odds = f"{_odds(price)} (цена {price:.3f})" if price else "—"
         return (f"{mark} Стратегия: {_rule_line(rule)}\n"
                 f"Событие: {title}\n"
                 f"Контекст: {context}\n"
                 f"Исход: {outcome} — {result}\n"
                 f"Ставка: {stake:.2f}$\n"
+                f"Кэф: {odds}\n"
                 f"P&L: {pnl:+.2f}$\n"
                 f"Банк: {bank}")
 
@@ -501,9 +503,9 @@ class Bot:
         http = HttpClient(min_interval=0.3)
         while True:
             open_trades = self.conn.execute(
-                "SELECT id, strategy, market_id, token_id, outcome, shares, stake, filled, fee, game_id, map_number "
-                "FROM paper_trades WHERE status='open'").fetchall()
-            for tid, rule, market_id, token, outcome, shares, stake, filled, fee, gid, map_no in open_trades:
+                "SELECT id, strategy, market_id, token_id, outcome, shares, stake, filled, fee, game_id, "
+                "map_number, avg_price FROM paper_trades WHERE status='open'").fetchall()
+            for tid, rule, market_id, token, outcome, shares, stake, filled, fee, gid, map_no, avg_price in open_trades:
                 try:
                     m = await asyncio.to_thread(feeds.fetch_market, http, market_id)
                 except Exception as e:
@@ -520,7 +522,7 @@ class Bot:
                 place = "матч" if self.sport == "tennis" else f"карта {map_no}"
                 bankroll = store.bank(self.conn, rule)
                 self.tg.send(self._settle_msg(bool(payout), rule, title, place, outcome,
-                                              stake * (filled or 0), pnl, bankroll))
+                                              stake * (filled or 0), pnl, bankroll, avg_price))
             await asyncio.sleep(120)
 
     # ---------- daily jobs ----------
