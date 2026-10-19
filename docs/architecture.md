@@ -89,8 +89,8 @@ docs/                     CJM, архитектура, бэклог
 - поиск матчей: открытые события CS2 в Gamma раз в 60 с → `live_games`, `live_markets`;
 - счёт: sports WebSocket, каждое изменение счёта/карты со временем прихода → `live_scores` (у части матчей раунды «000-000» — данных нет);
 - стакан текущей карты (оба исхода) раз в `BOOK_INTERVAL` с, при изменении → `live_books` (топ-10 уровней);
-- правила (`pmbot/live/paper.py`) в перерыве карты (12–13 раундов) и во второй половине (`leader_late`), каждое не больше раза на карту: сигнал → через 1 с берётся стакан, покупка на `PAPER_STAKE_PCT` % от виртуального банка правила (`paper_bank`: `PAPER_BANK_USD` при первом запуске правила + P&L рассчитанных с тех пор сделок; удалить строку — начать банк заново) по заявкам продавцов + комиссия → `paper_trades` (`open` / `unfilled`, если продавцов нет);
-- ценовое правило `fav_band_t1` (только tier1, на перерыве): покупка стороны, чей ask в 0.70–0.92 (R-14/R-15);
+- правила (`pmbot/live/paper.py`) в перерыве карты (12–13 раундов); по умолчанию CS2: `leader_half`, `leader_half6`, `fav_band_t1` (`DEFAULT_RULES` / compose). Лидеры только если прематч купленного кэф ~**1.54–2.00** и ask не короче кэфа ~**1.25** (`MAX_ASK`; иначе `rejected`). `leader_late` / `maker_t1` — opt-in через `PAPER_RULES`. Каждое правило не больше раза на карту: сигнал → через 1 с стакан → ставка `%` банка → `paper_trades`;
+- ценовое правило `fav_band_t1` (только tier1, на перерыве): покупка стороны с кэфом ~1.09–1.43 (R-14/R-15);
 - бумажный мейкер `maker_t1` (только tier1, текущая карта): раз в `MAKER_INTERVAL` с последние 500 тейкерских сделок (Data API) → `paper.maker_fills`: заявка на покупку фаворита (0.70–0.92) по последней цене сделки, исполняется только если продающий тейкер прошёл ниже неё (очередь не важна); одна позиция на карту, добор до ставки, без комиссии (проверка на истории — `scripts/research/maker_replay.py`, совпадает с `analysis/maker_sim.py`);
 - расчёт по закрытию рынка в Gamma раз в 2 мин → `settled`, P&L;
 - Telegram: сигнал, расчёт, итог дня в `REPORT_HOUR_UTC`; в `CS_COLLECT_HOUR_UTC` — сбор cybersport.ru за 2 дня (стороны первой половины для анализа).
@@ -99,7 +99,7 @@ docs/                     CJM, архитектура, бэклог
 
 Dota 2 — тот же бот вторым контейнером `paper-bot-dota` (`PAPER_SPORT=dota2`, `PAPER_STAKE_PCT=1`, все правила Доты; база `data/live_dota2.sqlite`, свои банки): Gamma series 10309, WebSocket лиги `dota2` (счёт `убийства|карты|BoN`, у части кадров убийства «000-000»). Правила `paper.DOTA_RULES` (R-20) — только tier1 BO3: когда фид переключается на карту 2, покупка проигравшего карту 1 на карту 2 (по кэфу матча до начала: 2.0–2.5, 2.5–3.33, любой). Срабатывают, только если бот в этом запуске видел карту 1 (после перезапуска посреди карты 2 — пропуск). Сбор cybersport в контейнере Доты не запускается. Отчёт: `docker compose exec paper-bot-dota python scripts/paper_report.py --sport dota2`.
 
-Теннис — третий контейнер `paper-bot-tennis` (`PAPER_SPORT=tennis`, `PAPER_STAKE_PCT=1`, база `data/live_tennis.sqlite`): Gamma series ATP/WTA/ITF (10365/10366/11634), WebSocket лиги `atp`/`wta`/`itf` (счёт `6-3, 4-3`, период `S1`/`S2`/`S3`). Правила `paper.TENNIS_RULES` (R-23b): когда фид переходит на сет 2 и сет 1 завершён — покупка победителя сета 1 на moneyline матча (`tennis_s1_winner` любой; `tennis_dog_s1` прематч-аутсайдер; `tennis_fav_s1` прематч-фаворит). Нужен живой сет 1 в этом запуске (рестарт посреди S2 — пропуск). Отчёт: `docker compose exec paper-bot-tennis python scripts/paper_report.py --sport tennis`.
+Теннис — третий контейнер `paper-bot-tennis` (`PAPER_SPORT=tennis`, `PAPER_STAKE_PCT=1`, база `data/live_tennis.sqlite`): Gamma series ATP/WTA/ITF (10365/10366/11634), WebSocket лиги `atp`/`wta`/`itf` (счёт `6-3, 4-3`, период `S1`/`S2`/`S3`). По умолчанию только `tennis_fav_s1` (R-23b/R-27): после сета 1 покупка прематч-фаворита, если он взял S1, и кэф входа ~**1.10–1.30** (`MIN_ASK`/`MAX_ASK`); `tennis_dog_s1` / `tennis_s1_winner` — opt-in. Нужен живой сет 1 в этом запуске. Отчёт: `docker compose exec paper-bot-tennis python scripts/paper_report.py --sport tennis`.
 
 ### Деплой (Linux + Docker)
 
@@ -108,6 +108,7 @@ Dota 2 — тот же бот вторым контейнером `paper-bot-dot
 3. Telegram: создать бота у @BotFather → `TELEGRAM_BOT_TOKEN`; написать боту любое сообщение, открыть `https://api.telegram.org/bot<TOKEN>/getUpdates` → `chat.id` → `TELEGRAM_CHAT_ID`.
 4. `cd ~/polymarket && docker compose up -d --build`; логи — `docker compose logs -f`; отчёт — `docker compose exec paper-bot python scripts/paper_report.py`.
 5. Обновление: `git pull && docker compose up -d --build`. Данные лежат в `~/polymarket/data` (том), переживают перезапуск.
+6. Снимок paper-баз в Telegram (CS2 + Dota + теннис): `bash scripts/dump_live_tg.sh` → `live_copy.sqlite.gz`, `live_dota2_copy.sqlite.gz`, `live_tennis_copy.sqlite.gz`.
 
 ### Автодеплой (GitHub Actions, `.github/workflows/deploy.yml`)
 

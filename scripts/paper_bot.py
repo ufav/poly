@@ -13,7 +13,7 @@
 Stake = PAPER_STAKE_PCT % of the rule's own virtual bank (PAPER_BANK_USD at the first start + settled P&L).
 
 Env (all optional): PAPER_SPORT=cs2 (or dota2 / tennis; database data/live.sqlite / data/live_<sport>.sqlite),
-PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default all of paper.SPORT_RULES[sport]),
+PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default paper.DEFAULT_RULES[sport]),
 BOOK_INTERVAL=10, MAKER_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
   python scripts/paper_bot.py
@@ -42,13 +42,11 @@ from pmbot.telegram import Telegram  # noqa: E402
 log = logging.getLogger("paper_bot")
 SPORT_LABEL = {"cs2": "CS2", "dota2": "Dota 2", "tennis": "Теннис"}
 RULE_LABEL = {
-    "fav_comeback_half": "CS2: камбэк фаворита на перерыве",
-    "fav_comeback_wide": "CS2: камбэк фаворита (широкий)",
     "leader_half": "CS2: лидер на перерыве +4",
     "leader_half6": "CS2: лидер на перерыве +6",
     "leader_late": "CS2: лидер во 2-й половине",
-    "fav_band_t1": "CS2: фаворит 0.70–0.92 на перерыве",
-    "maker_t1": "CS2: мейкер на фаворита tier1",
+    "fav_band_t1": "CS2: фаворит кэф 1.09–1.43 на перерыве (tier1)",
+    "maker_t1": "CS2: мейкер на фаворита кэф 1.09–1.43 (tier1)",
     "dota_dog_m2": "Dota: аутсайдер 2.0–2.5 после карты 1",
     "dota_dog3_m2": "Dota: аутсайдер 2.5–3.33 после карты 1",
     "dota_loser_m2": "Dota: проигравший карту 1 на карту 2",
@@ -78,7 +76,8 @@ class Bot:
         self.bank_usd = float(os.getenv("PAPER_BANK_USD", "1000"))
         self.stake_pct = float(os.getenv("PAPER_STAKE_PCT", "2"))
         allowed = paper.SPORT_RULES[self.sport]
-        names = [n.strip() for n in (os.getenv("PAPER_RULES") or ",".join(sorted(allowed))).split(",")]
+        default = ",".join(paper.DEFAULT_RULES.get(self.sport, ()))
+        names = [n.strip() for n in (os.getenv("PAPER_RULES") or default).split(",") if n.strip()]
         names = [n for n in names if n in allowed]
         score_rules = paper.RULES | paper.DOTA_RULES | paper.TENNIS_RULES
         self.rules = {n: score_rules[n] for n in names if n in score_rules}
@@ -355,8 +354,16 @@ class Bot:
             return
         fill = paper.simulate_fill(book["asks"], stake)
         status = "open" if fill["shares"] > 0 else "unfilled"
-        if status == "open" and book["ask"] < paper.MIN_ASK.get(rule, 0):
-            status = "rejected"
+        reject_why = None
+        ask = book.get("ask")
+        if status == "open" and ask is not None and ask < paper.MIN_ASK.get(rule, 0):
+            # tennis: entry odds too long; CS2 leaders: ask disagrees with score feed
+            why = (f"кэф слишком высокий ({_odds(ask)})" if rule.startswith("tennis")
+                   else "ask противоречит счёту")
+            status, reject_why = "rejected", why
+        elif status == "open" and ask is not None and ask >= paper.MAX_ASK.get(rule, 1.01):
+            status, reject_why = "rejected", f"кэф уже низкий ({_odds(ask)})"
+        if status == "rejected":
             fill = {**fill, "shares": 0, "filled": 0, "fee": 0}
         with self.conn:
             cur = self.conn.execute(
@@ -373,7 +380,7 @@ class Bot:
         if status == "unfilled":
             mark, status_line = "🚫", "не исполнено (пустой стакан)"
         elif status == "rejected":
-            mark, status_line = "⚠️", "пропущено (ask противоречит счёту)"
+            mark, status_line = "⚠️", f"пропущено ({reject_why})"
         elif fill["filled"] < 0.999:
             mark, status_line = "📝", f"частично {fill['filled']:.0%}"
         else:

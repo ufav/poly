@@ -11,16 +11,33 @@ assert paper.parse_score("7-1|0-0|Bo3") == ((7, 1), (0, 0))
 assert paper.parse_score("000-000|1-1|Bo3") is None
 assert paper.parse_score(None) is None
 
-pre = {"Vitality": 0.8, "Aurora": 0.2}
-s = paper.MapState(1, {"Vitality": 5, "Aurora": 7}, {"Vitality": 0, "Aurora": 0}, pre)
-assert paper.RULES["fav_comeback_half"](s) == "Vitality"
-assert paper.RULES["leader_half"](s) is None
+# slight fav leading at half — prematch in band odds ~2.00–1.54
+pre = {"Vitality": 0.40, "Aurora": 0.60}
 s = paper.MapState(1, {"Vitality": 3, "Aurora": 9}, {"Vitality": 0, "Aurora": 0}, pre)
-assert paper.RULES["fav_comeback_half"](s) is None
-assert paper.RULES["fav_comeback_wide"](s) == "Vitality"
 assert paper.RULES["leader_half"](s) == "Aurora"
+assert paper.RULES["leader_half6"](s) == "Aurora"
+# underdog leading — prematch 0.40 outside band → skip
+pre_dog = {"Vitality": 0.60, "Aurora": 0.40}
+s_dog = paper.MapState(1, {"Vitality": 3, "Aurora": 9}, {"Vitality": 0, "Aurora": 0}, pre_dog)
+assert paper.RULES["leader_half"](s_dog) is None
+
+# heavy favourite leading — prematch outside band → no signal (R-26)
+pre_fav = {"Vitality": 0.85, "Aurora": 0.15}
+s = paper.MapState(1, {"Vitality": 9, "Aurora": 3}, {"Vitality": 0, "Aurora": 0}, pre_fav)
+assert paper.RULES["leader_half"](s) is None
+assert paper.RULES["leader_half6"](s) is None
+
+# not at half / lead too small
 s = paper.MapState(1, {"Vitality": 5, "Aurora": 6}, {"Vitality": 0, "Aurora": 0}, pre)
-assert all(rule(s) is None for rule in paper.RULES.values())
+assert paper.RULES["leader_half"](s) is None
+assert paper.RULES["leader_half6"](s) is None
+
+assert "fav_comeback_half" not in paper.SPORT_RULES["cs2"]
+assert set(paper.DEFAULT_RULES["cs2"]) == {"leader_half", "leader_half6", "fav_band_t1"}
+assert paper.DEFAULT_RULES["tennis"] == ("tennis_fav_s1",)
+assert paper.MAX_ASK["leader_half6"] == 0.80
+assert paper.MIN_ASK["tennis_fav_s1"] == 0.77
+assert paper.MAX_ASK["tennis_fav_s1"] == 0.91
 
 fill = paper.simulate_fill([(0.40, 100), (0.42, 1000)], 100)
 assert abs(fill["spent"] - 100) < 1e-6 and 0.40 < fill["avg_price"] < 0.42, fill

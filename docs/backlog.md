@@ -65,6 +65,12 @@
 | D-21 | Волейбол → `data/volleyball.sqlite`: Polymarket 19 series (`vb*`, 213 событий, $183k, истории done); Olimpbet sport-id **104** (~57.8k матчей, 01.10.2025–17.10.2026, сеты в `set_scores`); bat `collect_volleyball.bat` / progress | done |
 | D-22 | Жирные PM-спорты (не кибер/теннис): `collect_fat.bat` → `data/{nfl,nba,nhl,lol,ufc,fifa,soccer}.sqlite` с 2025-08, истории moneyline ≥ $1k; детект moneyline для LoL/UFC/EPL Yes-No | todo |
 | A-48 | Волейбол прематч-калибровка (R-25, `volleyball_calib.py`): n=200 moneyline, рынок тонкий; фаворит ≈ откалиброван (edge −1.9 п.п.); длинные аутсайдеры 5+ на mid шумят. Связка PM↔OB + пути по сетам — todo | doing |
+| A-49 | Paper CS2 live_copy: диапазоны прематч/входа (R-26, `paper_prematch_band.py`). Лидеры: прематч купленного кэф **1.54–2.0** (+7%), вход кэф **≥1.33** (+25…+36%); вход ≤1.11 −16%. Кандидат: `MAX_ASK≈0.80` и/или фильтр прематч на `leader_half*` | done |
+| T-21 | Paper CS2: убрать `fav_comeback_half` / `fav_comeback_wide` из правил бота (paper минус, R-8/R-26) | done |
+| T-22 | Paper CS2: дефолт `leader_half`+`leader_half6`+`fav_band_t1`; лидеры — прематч кэф ~1.54–2.0 + `MAX_ASK` (не короче ~1.25); maker/late opt-in; compose override `PAPER_RULES` | done |
+| T-23 | Снимок всех paper DB в Telegram: `scripts/dump_live_tg.sh` (CS2 + dota2 + tennis) | done |
+| A-50 | Paper теннис live_copy (R-27, `paper_tennis_band.py`): fav после S1 +1.5%; лучший вход кэф 1.10–1.20 (+9%); вход ≥1.35 минус; dog почти нет сделок | done |
+| T-24 | Paper теннис: дефолт только `tennis_fav_s1`, вход кэф ~1.10–1.30; dog/s1_winner opt-in; compose override | done |
 | D-18 | Dota 2: Steam id оставшихся ~340 карт (в основном мелкие, 1% объёма) — Steam Web API (нужен бесплатный ключ Steam) или STRATZ; только если понадобится | todo |
 | A-39 | Dota 2 (R-17, `analysis/dota_draft.py`): драфт, связки героев, герой против героя, любимые герои/связки команды и игрока, очные встречи, Эло, форма, усталость — предсказывают исход (59.6%), но цена после драфта точнее и признаки к ней ничего не добавляют; плюс против цены был только на поминутной цене тонких рынков, по реальным сделкам не значим | done |
 | A-41 | Dota 2: оставшееся из A-39 — стендины (`cs_match_players` против истории состава), переносы матчей (PandaScore), букмекер (`cs_matches.odds`) против Polymarket, страна турнира против страны команды | todo |
