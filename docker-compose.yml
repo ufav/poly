@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # override old .env lists (no comebacks/maker/late); filters in paper.py R-26
+      # no comebacks/maker/late; no prematch/entry odds band (T-25)
       PAPER_RULES: leader_half,leader_half6,fav_band_t1
     volumes:
       - ./data:/app/data
@@ -31,7 +31,7 @@ services:
         max-size: "20m"
         max-file: "5"
 
-  # Tennis: fav after own set 1, entry odds ~1.10–1.30 (R-23b / R-27)
+  # Tennis: buy set-1 winner on moneyline (R-23b) — all three banks
   paper-bot-tennis:
     build: .
     restart: unless-stopped
@@ -39,7 +39,7 @@ services:
     environment:
       PAPER_SPORT: tennis
       PAPER_STAKE_PCT: "1"
-      PAPER_RULES: tennis_fav_s1
+      PAPER_RULES: ""
     volumes:
       - ./data:/app/data
     logging:

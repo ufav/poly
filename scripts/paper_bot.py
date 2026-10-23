@@ -357,12 +357,7 @@ class Bot:
         reject_why = None
         ask = book.get("ask")
         if status == "open" and ask is not None and ask < paper.MIN_ASK.get(rule, 0):
-            # tennis: entry odds too long; CS2 leaders: ask disagrees with score feed
-            why = (f"кэф слишком высокий ({_odds(ask)})" if rule.startswith("tennis")
-                   else "ask противоречит счёту")
-            status, reject_why = "rejected", why
-        elif status == "open" and ask is not None and ask >= paper.MAX_ASK.get(rule, 1.01):
-            status, reject_why = "rejected", f"кэф уже низкий ({_odds(ask)})"
+            status, reject_why = "rejected", "ask противоречит счёту"
         if status == "rejected":
             fill = {**fill, "shares": 0, "filled": 0, "fee": 0}
         with self.conn:

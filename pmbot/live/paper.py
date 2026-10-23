@@ -1,10 +1,9 @@
 """Paper trading: rules evaluated on live score, fills simulated on the real order book, settlement from Gamma.
 
 Rules are hypotheses to test, not proven strategies (see docs/research.md). Each fires at most once per map:
-halftime leaders at 12-13 rounds (MR12), only if prematch of the leader is in ~odds 2.00–1.54 and ask not shorter
-than ~1.25 (R-26); late / maker / comebacks are opt-in or removed. Price rules (tier1): fav_band taker and maker.
-Dota 2 (tier1 BO3, R-20): map 2 after lost map 1 by match prematch. Tennis (R-23b/R-27): after set 1, buy
-prematch favourite who won S1 if entry odds ~1.10–1.30; dog / any-winner opt-in.
+halftime leaders at 12-13 rounds (MR12); late / maker / comebacks are opt-in or removed. Price rules (tier1):
+fav_band taker and maker. Dota 2 (tier1 BO3, R-20): map 2 after lost map 1 by match prematch.
+Tennis (R-23b): after set 1, buy the set-1 winner (any / prematch dog / prematch fav).
 """
 
 import json
@@ -41,19 +40,12 @@ def _at_half(s: MapState) -> bool:
     return HALF_ROUNDS[0] <= s.total <= HALF_ROUNDS[1]
 
 
-def leader(min_lead: int, pm_lo: float = 0.50, pm_hi: float = 0.65):
-    """Halftime leader with lead >= min_lead; prematch of that side in [pm_lo, pm_hi)
-    (default odds ~2.00–1.54 — even / slight favourite; R-26)."""
+def leader(min_lead: int):
     def rule(s: MapState) -> str | None:
         if not _at_half(s):
             return None
         top = max(s.rounds, key=s.rounds.get)
-        if s.rounds[top] - s.rounds[s.other(top)] < min_lead:
-            return None
-        p = s.prematch.get(top)
-        if p is None or not (pm_lo <= p < pm_hi):
-            return None
-        return top
+        return top if s.rounds[top] - s.rounds[s.other(top)] >= min_lead else None
     return rule
 
 
@@ -94,15 +86,8 @@ RULES = {
     "leader_late": leader_late(5, 11),  # off by default (R-14/R-26 minus); enable via PAPER_RULES
 }
 
-# ask below MIN / at-or-above MAX → rejected (CS2 leaders: feed sanity + R-26; tennis: entry odds band R-27)
-MIN_ASK = {
-    "leader_half": 0.55, "leader_half6": 0.60, "leader_late": 0.60,
-    "tennis_fav_s1": 0.77,  # entry odds ≤ ~1.30
-}
-MAX_ASK = {
-    "leader_half": 0.80, "leader_half6": 0.80, "leader_late": 0.80,  # odds ≲ 1.25
-    "tennis_fav_s1": 0.91,  # entry odds ≥ ~1.10
-}
+# ask below MIN means the market disagrees with the feed score (broken feed of minor events)
+MIN_ASK = {"leader_half": 0.55, "leader_half6": 0.60, "leader_late": 0.60}
 
 # price rules, tier1 only (R-14 / R-15: in tier1 live the favourite priced 0.70-0.92 is underpriced by 2-3 pp)
 BAND_RULES = {"fav_band_t1": (0.70, 0.92)}   # taker at the half: buy the side whose ask is in the band
@@ -115,7 +100,7 @@ DOTA_RULES = {
     "dota_loser_m2": map1_loser(0.0, 1.01),
 }
 
-# Tennis moneyline after set 1 (R-23b / R-27): fav after own S1 default; dog / any — opt-in
+# Tennis moneyline after set 1 (R-23b): buy set-1 winner (any / prematch dog / prematch fav)
 TENNIS_RULES = {
     "tennis_s1_winner": set1_winner(0.0, 1.01),
     "tennis_dog_s1": set1_winner(0.0, 0.50),
@@ -131,7 +116,7 @@ SPORT_RULES = {
 DEFAULT_RULES = {
     "cs2": ("leader_half", "leader_half6", "fav_band_t1"),
     "dota2": tuple(DOTA_RULES),
-    "tennis": ("tennis_fav_s1",),
+    "tennis": tuple(TENNIS_RULES),
 }
 
 
