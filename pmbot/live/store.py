@@ -130,6 +130,13 @@ def save_score(conn: sqlite3.Connection, game_id: int, score: str | None, period
                      (status, home, away, game_id))
 
 
+def save_score_src(conn: sqlite3.Connection, game_id: int, score: str, period: str | None, src: str) -> None:
+    """Score from a fallback source (status = source name), live_games untouched."""
+    with conn:
+        conn.execute("INSERT OR IGNORE INTO live_scores (game_id, t, score, period, status) VALUES (?,?,?,?,?)",
+                     (game_id, time.time(), score, period, src))
+
+
 def open_bank(conn: sqlite3.Connection, strategy: str, start_usd: float) -> None:
     """Start the rule's bankroll now unless it already exists (delete the row to restart)."""
     with conn:

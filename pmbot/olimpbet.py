@@ -6,6 +6,10 @@
 Tennis (101): tournament name carries level/city/country/surface.
 Volleyball (104): scoresByPeriod = points per set (e.g. 25-22); see results?sIds=104.
 Behind Cloudflare: plain requests pass, keep a slow pace (the site is protected against scraping).
+
+Live (CS2 = 1040): GET /api/v2/events?locale=en&sport-ids=1040&page-size=100 -> items with live, competitors,
+homeCompetitorIds, statistics [{code: score '1:0' maps, scores_by_periods '13:5, 10:1' rounds per map}]. Round score
+of PGL / NODWIN / ESEA etc. that the Polymarket sports WS sends as '000-000'; usually ~10 s (up to ~45 s) behind it.
 """
 
 import datetime as dt
@@ -20,6 +24,8 @@ from pmbot.http import HttpClient
 API = "https://old.olimpbet.kz/api/v2/event-results"
 TENNIS_SPORT_ID = 101
 VOLLEYBALL_SPORT_ID = 104  # https://old.olimpbet.kz/results?status=ENDED&sIds=104
+CS2_SPORT_ID = 1040
+LIVE_API = "https://old.olimpbet.kz/api/v2/events"
 SITE_TZ = "+05:00"  # day boundaries as on the site (Kazakhstan)
 SURFACES = ("Hard", "Clay", "Grass", "Carpet")
 STATUSES = ("TRADING", "SUSPENDED", "OPEN", "CANCELLED", "INTERRUPTED", "POSTPONED", "ENDED", "CLOSED")
@@ -67,6 +73,40 @@ def _fetch_pages(http: HttpClient, url: str) -> tuple[list[dict], int]:
         key = doc.get("paginationKeyForward")
         if not key or not doc.get("items"):
             return items, pages
+
+
+def _pair(value: str | None) -> tuple[int, int] | None:
+    try:
+        a, b = (int(x) for x in (value or "").strip().split(":"))
+    except ValueError:
+        return None
+    return a, b
+
+
+def parse_live(item: dict) -> dict | None:
+    """Live event -> {id, tournament, home, away, maps (home, away), periods [(home, away) rounds per map]};
+    None for player specials ('FURIA.KSCERATO') and events without a round score."""
+    comps = {c["id"]: c["name"] for c in item.get("competitors") or []}
+    home_ids = item.get("homeCompetitorIds") or []
+    if len(comps) != 2 or not home_ids or home_ids[0] not in comps or any("." in n for n in comps.values()):
+        return None
+    stats = {x.get("code"): x.get("value") for x in item.get("statistics") or []}
+    maps = _pair(stats.get("score"))
+    periods = [_pair(p) for p in (stats.get("scores_by_periods") or "").split(",") if p.strip()]
+    if not maps or not periods or None in periods:
+        return None
+    home = comps[home_ids[0]]
+    away = next(n for i, n in comps.items() if i != home_ids[0])
+    return {"id": item["id"], "tournament": (item.get("tournament") or {}).get("name"), "home": home, "away": away,
+            "maps": maps, "periods": periods}
+
+
+def fetch_live(http: HttpClient, sport_id: int = CS2_SPORT_ID) -> list[dict]:
+    """Live events of the sport with a round score (parse_live)."""
+    r = http.get(f"{LIVE_API}?locale=en&sport-ids={sport_id}&page-size=100")
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+    return [p for it in r.json().get("items", []) if it.get("live") and (p := parse_live(it))]
 
 
 def fetch_day(http: HttpClient, day: dt.date, sport_id: int = TENNIS_SPORT_ID

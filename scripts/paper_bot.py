@@ -1,7 +1,8 @@
 """Live recorder + paper trading bot of one sport: CS2, Dota 2, or tennis (no real orders, no private key needed).
 
 - discovery: open events of the sport from Gamma every 60 s (markets, tokens);
-- score: Polymarket sports WebSocket, every change stored with arrival time;
+- score: Polymarket sports WebSocket, every change stored with arrival time; CS2 games it sends without rounds
+  ('000-000': PGL, NODWIN, ESEA...) get the round score from Olimpbet live (status / score_src 'olimpbet');
 - order book of the current map / match market every BOOK_INTERVAL s, stored on change;
 - paper trades by pmbot/live/paper.py rules, filled on the real book after 1 s (Polymarket delay);
   CS2 - on the round score of the current map; Dota 2 - on the map score when the feed switches to the next map;
@@ -14,7 +15,8 @@ Stake = PAPER_STAKE_PCT % of the rule's own virtual bank (PAPER_BANK_USD at the 
 
 Env (all optional): PAPER_SPORT=cs2 (or dota2 / tennis; database data/live.sqlite / data/live_<sport>.sqlite),
 PAPER_BANK_USD=1000, PAPER_STAKE_PCT=2, PAPER_RULES (comma list, default paper.DEFAULT_RULES[sport]),
-BOOK_INTERVAL=10, MAKER_INTERVAL=10, REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+BOOK_INTERVAL=10, MAKER_INTERVAL=10, OLIMPBET_INTERVAL=5 (0 = off), REPORT_HOUR_UTC=18, CS_COLLECT_HOUR_UTC=3,
+TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
   python scripts/paper_bot.py
 """
@@ -33,13 +35,14 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 
-from pmbot import polymarket  # noqa: E402
+from pmbot import olimpbet, polymarket  # noqa: E402
 from pmbot.http import HttpClient  # noqa: E402
 from pmbot.join import norm_team  # noqa: E402
 from pmbot.live import feeds, paper, report, store  # noqa: E402
 from pmbot.telegram import Telegram  # noqa: E402
 
 log = logging.getLogger("paper_bot")
+NO_ROUNDS_WARN_S = 300
 SPORT_LABEL = {"cs2": "CS2", "dota2": "Dota 2", "tennis": "Теннис"}
 RULE_LABEL = {
     "leader_half": "CS2: лидер на перерыве +4",
@@ -101,6 +104,12 @@ class Bot:
             "SELECT strategy, game_id, map_number FROM paper_trades")}
         self.trade_lock = asyncio.Lock()
         self.http_trade = HttpClient(min_interval=0.1, retries=3, timeout=15)
+        # CS2 round score from Olimpbet for games the WS sends without rounds ('000-000': PGL, NODWIN, ESEA...)
+        self.ob_interval = float(os.getenv("OLIMPBET_INTERVAL", "5"))
+        self.score_src: dict[int, str] = {}       # game_id -> fallback score source of its trades
+        self.ob_last: dict[int, tuple] = {}
+        self.no_rounds: dict[int, float] = {}     # game_id -> first time live without rounds in any source
+        self.no_rounds_warned: set[int] = set()
 
     @property
     def all_rules(self) -> list[str]:
@@ -348,6 +357,9 @@ class Bot:
     def paper_buy(self, rule: str, gid: int, game: dict, s: paper.MapState, team: str, market: dict, token: str,
                   book: dict) -> None:
         state = {"rounds": s.rounds, "maps": s.maps, "prematch": s.prematch}
+        src = self.score_src.get(gid)
+        if src:
+            state["score_src"] = src
         stake, bankroll = self.stake_for(rule)
         if stake < 1:
             log.info("%s: bank %.2f$ exhausted", rule, bankroll)
@@ -380,8 +392,8 @@ class Bot:
             mark, status_line = "📝", f"частично {fill['filled']:.0%}"
         else:
             mark, status_line = "📝", "исполнено"
-        self.tg.send(self._signal_msg(mark, rule, game["title"], self._context(s), team, stake, bankroll, price,
-                                      status_line))
+        context = self._context(s) + (" (счёт Olimpbet)" if src == "olimpbet" else "")
+        self.tg.send(self._signal_msg(mark, rule, game["title"], context, team, stake, bankroll, price, status_line))
 
     def _context(self, s: paper.MapState) -> str:
         if self.sport == "dota2":
@@ -419,6 +431,69 @@ class Bot:
                 f"Кэф: {odds}\n"
                 f"P&L: {pnl:+.2f}$\n"
                 f"Банк: {bank}")
+
+    # ---------- CS2 round score fallback ----------
+    async def olimpbet_loop(self) -> None:
+        """Games live in the WS without rounds get the round score from Olimpbet and run the same rules; tier1
+        games without rounds in both sources for NO_ROUNDS_WARN_S are reported once to Telegram."""
+        if self.sport != "cs2" or self.ob_interval <= 0:
+            return
+        http = olimpbet.client(min_interval=1)
+        down_since, warned = None, False
+        while True:
+            try:
+                events = await asyncio.to_thread(olimpbet.fetch_live, http)
+            except Exception as e:
+                log.warning("olimpbet live: %r", e)
+                down_since = down_since or time.time()
+                if not warned and time.time() - down_since > NO_ROUNDS_WARN_S:
+                    warned = True
+                    self.tg.send(f"⚠️ Olimpbet не отвечает ({e!r:.150}): матчи без раундов в WS не торгуются")
+            else:
+                if warned:
+                    self.tg.send("✅ Olimpbet снова отвечает")
+                down_since, warned = None, False
+                self.apply_olimpbet(events)
+            await asyncio.sleep(self.ob_interval)
+
+    def apply_olimpbet(self, events: list[dict]) -> None:
+        now = time.time()
+        for gid, item in list(self.live.items()):
+            game = self.games.get(gid)
+            if not game or not item.get("live") or item.get("ended") or paper.parse_score(item.get("score")):
+                self.no_rounds.pop(gid, None)
+                continue
+            period = str(item.get("period") or "")
+            ws_maps = paper.parse_maps(item.get("score"))
+            try:
+                map_number = int(period.split("/")[0])
+            except ValueError:
+                continue
+            if map_number < 1 or not ws_maps:
+                continue
+            ev = paper.olimpbet_match(events, item.get("homeTeam"), item.get("awayTeam"))
+            if not ev:
+                first = self.no_rounds.setdefault(gid, now)
+                if (now - first > NO_ROUNDS_WARN_S and gid not in self.no_rounds_warned
+                        and paper.is_tier1(game, self.sport)):
+                    self.no_rounds_warned.add(gid)
+                    self.tg.send(f"⚠️ Нет счёта раундов (WS и Olimpbet), правила не работают\n"
+                                 f"Событие: {game['title']}\nКарта: {period}")
+                    log.info("no rounds in WS / olimpbet: %s", game["title"])
+                continue
+            self.no_rounds.pop(gid, None)
+            rounds, maps, ob_map = ev["rounds"], ev["maps"], ev["map_number"]
+            if ob_map != map_number:  # sources on different maps (switch in progress)
+                continue
+            key = (rounds, maps, ob_map)
+            if self.ob_last.get(gid) == key:
+                continue
+            self.ob_last[gid] = key
+            best_of = (item.get("score") or "").split("|")[-1]
+            score = f"{rounds[0]}-{rounds[1]}|{maps[0]}-{maps[1]}|{best_of}"
+            store.save_score_src(self.conn, gid, score, period, "olimpbet")
+            self.score_src[gid] = "olimpbet"
+            asyncio.create_task(self.evaluate(gid, {**item, "score": score}))
 
     # ---------- order books ----------
     async def books_loop(self) -> None:
@@ -553,8 +628,8 @@ class Bot:
         self.tg.send(f"🤖 Бот {SPORT_LABEL[self.sport]} запущен\n"
                      f"Ставка: {self.stake_pct:g}% от банка правила\n"
                      f"Банки:\n{banks_lines}")
-        await asyncio.gather(self.discovery_loop(), self.ws_loop(), self.books_loop(), self.maker_loop(),
-                             self.settle_loop(), self.daily_loop())
+        await asyncio.gather(self.discovery_loop(), self.ws_loop(), self.olimpbet_loop(), self.books_loop(),
+                             self.maker_loop(), self.settle_loop(), self.daily_loop())
 
 
 def main() -> None:

@@ -205,6 +205,32 @@ def parse_maps(score: str | None) -> tuple[int, int] | None:
     return a, b
 
 
+def _same_team(a: str, b: str) -> bool:
+    return a == b or (min(len(a), len(b)) >= 3 and (a in b or b in a))
+
+
+def olimpbet_match(events: list[dict], home: str | None, away: str | None) -> dict | None:
+    """The only Olimpbet live event (olimpbet.parse_live) of the WS teams -> {rounds, maps} in WS home-away order
+    and map_number (maps listed in its score, the current one included); None if none or ambiguous."""
+    h, a = norm_team(home), norm_team(away)
+    if not h or not a:
+        return None
+    found = []
+    for ev in events:
+        eh, ea = norm_team(ev["home"]), norm_team(ev["away"])
+        if _same_team(h, eh) and _same_team(a, ea):
+            found.append((ev, False))
+        elif _same_team(h, ea) and _same_team(a, eh):
+            found.append((ev, True))
+    if len(found) != 1:
+        return None
+    ev, swap = found[0]
+    rounds, maps = ev["periods"][-1], ev["maps"]
+    if swap:
+        rounds, maps = rounds[::-1], maps[::-1]
+    return {"rounds": rounds, "maps": maps, "map_number": len(ev["periods"])}
+
+
 def parse_tennis_sets(score: str | None) -> list[tuple[int, int]] | None:
     """'6-3, 4-3' / '4-6, 0-0' -> [(6, 3), (4, 3)] games per set in home-away order."""
     if not score or "|" in score:
