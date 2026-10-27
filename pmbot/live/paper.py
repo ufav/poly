@@ -1,7 +1,7 @@
 """Paper trading: rules evaluated on live score, fills simulated on the real order book, settlement from Gamma.
 
 Rules are hypotheses to test, not proven strategies (see docs/research.md). Each fires at most once per map:
-halftime leaders at 12-13 rounds (MR12); late / maker / comebacks are opt-in or removed. Price rules (tier1):
+halftime leaders at 12-13 rounds (MR12); underdog leading a slow-starting favourite (R-29); late / maker / comebacks are opt-in or removed. Price rules (tier1):
 fav_band taker and maker. Dota 2 (tier1 BO3, R-20): map 2 after lost map 1 by match prematch.
 Tennis (R-23b): after set 1, buy the set-1 winner (any / prematch dog / prematch fav).
 """
@@ -60,6 +60,21 @@ def leader_late(min_lead: int, min_rounds: int):
     return rule
 
 
+# favourite-dog round score of a bad start (R-29): the first of them the map reaches
+SLOW_START = {(0, 3), (0, 4), (0, 5), (0, 6), (1, 4), (1, 5), (1, 6)}
+
+
+def dog_vs_slow_fav(lo: float, hi: float):
+    """Prematch favourite priced lo-hi down early on the map (SLOW_START) -> buy the leading underdog (R-29)."""
+    def rule(s: MapState) -> str | None:
+        fav = next((t for t, p in s.prematch.items() if lo <= p < hi), None)
+        if not fav:
+            return None
+        dog = s.other(fav)
+        return dog if (s.rounds[fav], s.rounds[dog]) in SLOW_START else None
+    return rule
+
+
 def map1_loser(lo: float, hi: float):
     """BO3 map 2: the side that lost map 1, if its match price at scheduled start is in [lo, hi)."""
     def rule(s: MapState) -> str | None:
@@ -84,6 +99,7 @@ RULES = {
     "leader_half": leader(4),
     "leader_half6": leader(6),
     "leader_late": leader_late(5, 11),  # off by default (R-14/R-26 minus); enable via PAPER_RULES
+    "dog_slow_fav": dog_vs_slow_fav(0.70, 0.80),  # prematch fav odds 1.25-1.43
 }
 
 # ask below MIN means the market disagrees with the feed score (broken feed of minor events)

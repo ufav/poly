@@ -48,6 +48,7 @@ RULE_LABEL = {
     "leader_half": "CS2: лидер на перерыве +4",
     "leader_half6": "CS2: лидер на перерыве +6",
     "leader_late": "CS2: лидер во 2-й половине",
+    "dog_slow_fav": "CS2: аутсайдер ведёт 3+ против фаворита кэф 1.25–1.43 в начале карты",
     "fav_band_t1": "CS2: фаворит кэф 1.09–1.43 на перерыве (tier1)",
     "maker_t1": "CS2: мейкер на фаворита кэф 1.09–1.43 (tier1)",
     "dota_dog_m2": "Dota: аутсайдер 2.0–2.5 после карты 1",
@@ -225,7 +226,7 @@ class Bot:
         if not teams or map_number < 1:
             return
         (r_home, r_away), (m_home, m_away) = parsed
-        if r_home + r_away < paper.HALF_ROUNDS[0] or not paper.consistent(map_number, (r_home, r_away), (m_home, m_away)):
+        if not paper.consistent(map_number, (r_home, r_away), (m_home, m_away)):
             return
         prematch = await self.get_prematch(gid, game)
         if not prematch:

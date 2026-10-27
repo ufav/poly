@@ -4,8 +4,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # no comebacks/maker/late; no prematch/entry odds band (T-25)
-      PAPER_RULES: leader_half,leader_half6,fav_band_t1
+      # no comebacks/maker/late; no prematch/entry odds band (T-25); dog_slow_fav = R-29 (T-27)
+      PAPER_RULES: leader_half,leader_half6,fav_band_t1,dog_slow_fav
     volumes:
       - ./data:/app/data
     logging:
