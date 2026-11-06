@@ -14,7 +14,7 @@ data_engine/legacy/       перенос собранных SQLite в PostgreSQL
 requirements-platform.txt зависимости платформы
 ```
 
-Сервер (`docker-compose.yml`): `postgres` (PostgreSQL 16, том `pgdata`, порт только 127.0.0.1 — для анализа через SSH-туннель) и `worker` (`workers/scheduler.py`: миграции при старте, затем задачи по расписанию в UTC — `olimpbet_daily` в 02:00) поднимаются каждым деплоем; пароль базы — `POSTGRES_PASSWORD` в `.env` сервера. Paper-боты — профиль `paper`, по умолчанию выключены; включаются через Actions → «paper bots control» (флажок `~/polymarket/.paper-running`).
+Сервер (`docker-compose.yml`): `postgres` (PostgreSQL 16, данные в папке сервера `/srv/sports/pgdata` вне проекта — переживают удаление и пересборку контейнера и `down -v`; бэкапы — `/srv/sports/backups`; порт только 127.0.0.1 — для анализа через SSH-туннель) и `worker` (`workers/scheduler.py`: миграции при старте, затем задачи по расписанию в UTC — `olimpbet_daily` в 02:00) поднимаются каждым деплоем; пароль базы — `POSTGRES_PASSWORD` в `.env` сервера. Paper-боты (Polymarket CS2 / Dota 2 / теннис) заморожены: код в репозитории, на сервер не деплоятся (сервисы — в истории git до коммита с удалением).
 
 Сбор результатов Olimpbet по 5 видам спорта (`data_engine/providers/olimpbet_results.py`): сырые ответы по дням → `raw_payloads` (`results_en`, `results_ru`); `--backfill` — ~14 месяцев, которые сайт хранит со счётом; `--daily` — последние 3 дня и пропуски.
 

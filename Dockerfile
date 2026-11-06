@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-LABEL app=polymarket-paper-bot
+LABEL app=sports-platform
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app

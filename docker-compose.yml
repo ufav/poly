@@ -4,8 +4,9 @@ x-logging: &logging
     max-size: "20m"
     max-file: "5"
 
+# Sports analytics platform (docs/md1.md). The old Polymarket paper bots are frozen: their code stays in the repo
+# (pmbot/live, scripts/paper_bot.py, compose services in git history), they are not deployed.
 services:
-  # ---------- sports analytics platform (docs/md1.md): started by every deploy ----------
   postgres:
     image: postgres:16
     restart: unless-stopped
@@ -15,8 +16,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     command: ["postgres", "-c", "shared_buffers=512MB", "-c", "work_mem=32MB", "-c", "maintenance_work_mem=256MB"]
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./backups:/backups
+      # data on the host, outside the project and docker volumes: survives container removal / rebuild / down -v
+      - ${PGDATA_DIR:-/srv/sports/pgdata}:/var/lib/postgresql/data
+      - ${PGBACKUP_DIR:-/srv/sports/backups}:/backups
     ports:
       - "127.0.0.1:5432:5432"   # local only: ssh tunnel for analysis from a workstation
     healthcheck:
@@ -40,51 +42,3 @@ services:
     volumes:
       - ./data:/app/data
     logging: *logging
-
-  # ---------- frozen paper bots (Polymarket CS2 / Dota 2 / tennis): profile "paper", not started by default ----------
-  # start / stop: Actions -> "paper bots control", or  docker compose --profile paper up -d
-  paper-bot:
-    build: .
-    profiles: ["paper"]
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      # no comebacks/maker/late; no prematch/entry odds band (T-25); dog_slow_fav = R-29 (T-27)
-      PAPER_RULES: leader_half,leader_half6,fav_band_t1,dog_slow_fav
-    command: ["python", "scripts/paper_bot.py"]
-    volumes:
-      - ./data:/app/data
-    logging: *logging
-
-  # Dota 2: map 1 loser on map 2 (docs/research.md R-20), own database data/live_dota2.sqlite and banks
-  paper-bot-dota:
-    build: .
-    profiles: ["paper"]
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      PAPER_SPORT: dota2
-      PAPER_STAKE_PCT: "1"
-      PAPER_RULES: ""
-    command: ["python", "scripts/paper_bot.py"]
-    volumes:
-      - ./data:/app/data
-    logging: *logging
-
-  # Tennis: buy set-1 winner on moneyline (R-23b) — all three banks
-  paper-bot-tennis:
-    build: .
-    profiles: ["paper"]
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      PAPER_SPORT: tennis
-      PAPER_STAKE_PCT: "1"
-      PAPER_RULES: ""
-    command: ["python", "scripts/paper_bot.py"]
-    volumes:
-      - ./data:/app/data
-    logging: *logging
-
-volumes:
-  pgdata:

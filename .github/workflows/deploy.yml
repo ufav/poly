@@ -1,4 +1,4 @@
-name: deploy paper bot
+name: deploy platform
 
 on:
   push:
@@ -37,9 +37,6 @@ jobs:
             set -e
             cd ~/polymarket
             git pull --ff-only
-            docker compose up -d --build  # platform: postgres + worker
-            if [ -f .paper-running ]; then  # paper bots (profile "paper") only when started via "paper bots control"
-              docker compose --profile paper up -d --build
-            fi
-            docker image prune -f --filter label=app=polymarket-paper-bot
+            docker compose up -d --build --remove-orphans  # postgres + worker
+            docker image prune -f --filter label=app=sports-platform
             docker compose ps
