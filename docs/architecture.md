@@ -1,3 +1,23 @@
+# Платформа спортивной аналитики (переписывание по docs/md1.md)
+
+Ставки — Polymarket; интерфейс — Telegram-бот; киберспорт (CS2 / Dota 2, paper-боты) заморожен. Стек MVP: PostgreSQL + воркер с планировщиком + бот (Redis / Celery / React / FastAPI — не нужны на старте).
+
+```
+core/                     настройки (.env: DATABASE_URL), PostgreSQL (SQLAlchemy 2), ORM-модели, справочники
+  models.py               sports, sources, leagues, seasons, teams, players, matches, match_statistics, match_events,
+                          markets, odds_history (append-only котировки), source_entities (таблица соответствий
+                          id / названий каждого источника внутренним id), raw_payloads
+  seed.py                 виды спорта и источники (`python -m core.seed`)
+migrations/               Alembic (`alembic upgrade head`)
+data_engine/legacy/       перенос собранных SQLite в PostgreSQL
+  football_data.py        football-data.co.uk: матчи, статистика, 1X2 / ТБ2.5 / АФ — pre-match и закрытие (Pinnacle, среднее, макс., Bet365, Betfair)
+requirements-platform.txt зависимости платформы
+```
+
+Котировки: `snapshot = pre` (за 1–2 дня до матча, football-data) / `closing` / NULL (котировка со временем `taken_at`, сборщики). Polymarket: `price`, `bid`, `ask`, `ask_size`, `odds = 1/ask`.
+
+# Прежняя система (Polymarket / киберспорт)
+
 # Архитектура
 
 Python 3.11, виртуальное окружение `.venv`, секреты в `.env` (в git не попадает), данные в `data/` (в git не попадают).
@@ -18,6 +38,8 @@ pmbot/                    пакет с переиспользуемым код�
                           live CS2 со счётом раундов (`fetch_live`) — запасной источник счёта для бота
   tennisdata.py           tennis-data.co.uk: годовые xlsx ATP/WTA (раунд, рейтинг, кэфы), чтение xlsx без зависимостей
   tennis_join.py          связка Polymarket ↔ Olimpbet ↔ tennis-data + признаки (покрытие, дом, джетлаг, усталость, кэфы)
+  footballdata.py         football-data.co.uk: CSV результатов, статистики матча и кэфов (22 лиги с 1993/94 + 16 стран) → data/football.sqlite
+  olimp_archive.py        архив результатов Olimp (xlsx по месяцам 2008-03…2022-10, D:/PycharmProjects/olimp): футбол → ol_matches (счёт, тайм, минуты голов, угловые/удары/владение/карточки) и ol_stats (строки «Статистика»: УГЛ, ЖК, фолы…); кэфов нет
   tiers.py                уровень турнира по названию (tier1 / tier2+ / квалификации) — анализ и бот
   telegram.py             уведомления (выключены без TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
   live/                   бот-регистратор и бумажная торговля
@@ -37,6 +59,9 @@ scripts/
   collect_olimpbet.py     теннис: результаты Olimpbet по дням (медленно, пауза ~4 с; повторный запуск докачивает)
   collect_tennisdata.py   теннис: tennis-data.co.uk ATP/WTA за годы
   collect_tennis.bat      теннис одной командой: цены Polymarket / trades / olimpbet / tennisdata / link
+  collect_football.py     футбол: football-data.co.uk → data/football.sqlite (`fd_matches`; повторный запуск докачивает, текущий сезон перекачивает)
+  import_olimp_football.py импорт архива Olimp в data/football.sqlite (повторный запуск пропускает импортированные файлы)
+  collect_olimpbet_football.py футбол: API результатов Olimpbet с 2022-10-25 (продолжение архива) → `ob_fb_events` (матчи + события статистики по таймам), ~5 запросов в день
   link_tennis.py          пересборка tennis_links (после collect_*)
   db_summary.py           статистика базы и пример траектории цены
   progress.py             живой прогресс сборщиков

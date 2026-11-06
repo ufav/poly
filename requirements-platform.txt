@@ -1,0 +1,12 @@
+# sports analytics platform (docs/md1.md): PostgreSQL schema, data engine, models
+-r requirements.txt
+sqlalchemy==2.0.29
+psycopg[binary]==3.3.8
+alembic==1.20.1
+pydantic==2.7.1
+pydantic-settings==2.16.2
+tzdata
+numpy
+pandas==2.2.2
+scipy==1.17.1
+scikit-learn==1.9.1

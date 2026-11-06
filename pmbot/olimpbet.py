@@ -5,6 +5,7 @@
      homeCompetitorIds, eventDate (UTC), basicStatistics.scoresByPeriod (sets), currentScore (sets won), status.
 Tennis (101): tournament name carries level/city/country/surface.
 Volleyball (104): scoresByPeriod = points per set (e.g. 25-22); see results?sIds=104.
+Football (100): ~2 400 items a day (matches + statistics events per match), page-size 500 -> ~5 requests a day.
 Behind Cloudflare: plain requests pass, keep a slow pace (the site is protected against scraping).
 
 Live (CS2 = 1040): GET /api/v2/events?locale=en&sport-ids=1040&page-size=100 -> items with live, competitors,
@@ -25,6 +26,7 @@ API = "https://old.olimpbet.kz/api/v2/event-results"
 TENNIS_SPORT_ID = 101
 VOLLEYBALL_SPORT_ID = 104  # https://old.olimpbet.kz/results?status=ENDED&sIds=104
 CS2_SPORT_ID = 1040
+FOOTBALL_SPORT_ID = 100  # results: page-size up to 500 works (1000 -> 400)
 LIVE_API = "https://old.olimpbet.kz/api/v2/events"
 SITE_TZ = "+05:00"  # day boundaries as on the site (Kazakhstan)
 SURFACES = ("Hard", "Clay", "Grass", "Carpet")
@@ -109,13 +111,13 @@ def fetch_live(http: HttpClient, sport_id: int = CS2_SPORT_ID) -> list[dict]:
     return [p for it in r.json().get("items", []) if it.get("live") and (p := parse_live(it))]
 
 
-def fetch_day(http: HttpClient, day: dt.date, sport_id: int = TENNIS_SPORT_ID
-              ) -> tuple[list[dict], int, int]:
+def fetch_day(http: HttpClient, day: dt.date, sport_id: int = TENNIS_SPORT_ID,
+              page_sizes: tuple[int, ...] = PAGE_SIZES) -> tuple[list[dict], int, int]:
     """All result items of a day, requests made, and hours lost. On a server error the day is retried with smaller
     pages, then hour by hour (an hour that still fails is skipped and counted). Blocking errors (403 / 429 /
     network) are raised to the caller."""
     requests = 0
-    for size in PAGE_SIZES:
+    for size in page_sizes:
         try:
             items, pages = _fetch_pages(http, day_url(day, sport_id=sport_id, page_size=size))
             return items, requests + pages, 0
@@ -125,13 +127,48 @@ def fetch_day(http: HttpClient, day: dt.date, sport_id: int = TENNIS_SPORT_ID
     for h in range(24):
         try:
             got, pages = _fetch_pages(http, day_url(day, sport_id=sport_id, hours=(h, h),
-                                                    page_size=PAGE_SIZES[-1]))
+                                                    page_size=page_sizes[-1]))
             items += got
             requests += pages
         except ServerError:
             requests += 1
             failed += 1
     return list({x["id"]: x for x in items}.values()), requests, failed
+
+
+def parse_football(item: dict) -> dict | None:
+    """Football result item -> ob_fb_events row. Match = eventType Main (kind GENERAL); statistics events
+    (kind STATISTICS: Corners, Yellow cards, Shots, Shots on target, Fouls, Offsides ...) point to it by
+    base_event_id; their score is the stat count, periods = halves. None without two competitors."""
+    comps = {c["id"]: c["name"] for c in item.get("competitors") or []}
+    home_ids = item.get("homeCompetitorIds") or []
+    if len(comps) != 2:
+        return None
+    home_id = home_ids[0] if home_ids and home_ids[0] in comps else next(iter(comps))
+    away_id = next(i for i in comps if i != home_id)
+    basic = item.get("basicStatistics") or {}
+    cur = basic.get("currentScore") or {}
+    periods = [(p.get("homeScore"), p.get("awayScore")) for p in basic.get("scoresByPeriod") or []]
+    live = {x.get("code"): x.get("value") for x in item.get("liveStatistics") or []}
+    tourn = item.get("tournament") or {}
+    etype = item.get("eventType") or {}
+    return {
+        "id": item["id"], "base_event_id": item.get("baseEventId"), "date": item.get("eventDate"),
+        "tournament_id": tourn.get("id"), "tournament": tourn.get("name"), "kind": item.get("kind"),
+        "event_type": etype.get("name"), "home_id": home_id, "away_id": away_id,
+        "home": comps[home_id], "away": comps[away_id],
+        "hs": cur.get("homeScore"), "as_": cur.get("awayScore"),
+        "periods": json.dumps(periods, separators=(",", ":")) if periods else None,
+        "home_red": _int(live.get("team1_red_cards")), "away_red": _int(live.get("team2_red_cards")),
+        "add_minutes": live.get("add_minutes") or None, "status": item.get("status"),
+    }
+
+
+def _int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_tournament(name: str) -> dict:
