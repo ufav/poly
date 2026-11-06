@@ -1,0 +1,51 @@
+name: paper bots control
+
+# Manual: Actions -> "paper bots control" -> Run workflow. stop keeps the data and leaves ~/polymarket/.paper-stopped,
+# so the deploy workflow only rebuilds and does not start the bots again until start removes it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "stop / start / status"
+        type: choice
+        options: [status, stop, start]
+        default: status
+      service:
+        description: "bot (all = every service of docker-compose.yml)"
+        type: choice
+        options: [all, paper-bot, paper-bot-dota, paper-bot-tennis]
+        default: all
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ${{ inputs.action }} ${{ inputs.service }}
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd ~/polymarket
+            svc="${{ inputs.service }}"
+            [ "$svc" = "all" ] && svc=""
+            case "${{ inputs.action }}" in
+              stop)
+                docker compose stop $svc
+                [ -z "$svc" ] && touch .paper-stopped || true
+                ;;
+              start)
+                rm -f .paper-stopped
+                docker compose start $svc || docker compose up -d $svc
+                ;;
+            esac
+            docker compose ps -a
+            [ -f .paper-stopped ] && echo "deploy will NOT start the bots (.paper-stopped present)" || true

@@ -32,6 +32,10 @@ jobs:
             set -e
             cd ~/polymarket
             git pull --ff-only
-            docker compose up -d --build
+            if [ -f .paper-stopped ]; then
+              docker compose build  # bots stopped via "paper bots control": rebuild only
+            else
+              docker compose up -d --build
+            fi
             docker image prune -f --filter label=app=polymarket-paper-bot
             docker compose ps
