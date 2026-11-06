@@ -1,11 +1,16 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 LABEL app=polymarket-paper-bot
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-platform.txt ./
+RUN pip install --no-cache-dir -r requirements-platform.txt
 COPY pmbot pmbot
 COPY scripts scripts
+COPY core core
+COPY data_engine data_engine
+COPY workers workers
+COPY migrations migrations
+COPY alembic.ini .
 
-CMD ["python", "scripts/paper_bot.py"]
+CMD ["python", "-u", "-m", "workers.scheduler"]

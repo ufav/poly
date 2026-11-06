@@ -14,6 +14,12 @@ data_engine/legacy/       перенос собранных SQLite в PostgreSQL
 requirements-platform.txt зависимости платформы
 ```
 
+Сервер (`docker-compose.yml`): `postgres` (PostgreSQL 16, том `pgdata`, порт только 127.0.0.1 — для анализа через SSH-туннель) и `worker` (`workers/scheduler.py`: миграции при старте, затем задачи по расписанию в UTC — `olimpbet_daily` в 02:00) поднимаются каждым деплоем; пароль базы — `POSTGRES_PASSWORD` в `.env` сервера. Paper-боты — профиль `paper`, по умолчанию выключены; включаются через Actions → «paper bots control» (флажок `~/polymarket/.paper-running`).
+
+Сбор результатов Olimpbet по 5 видам спорта (`data_engine/providers/olimpbet_results.py`): сырые ответы по дням → `raw_payloads` (`results_en`, `results_ru`); `--backfill` — ~14 месяцев, которые сайт хранит со счётом; `--daily` — последние 3 дня и пропуски.
+
+Локальные архивы результатов Olimp / Olimpbet (все виды спорта, русские названия): `D:\PycharmProjects\olimp` (xlsx 2008-03…2022-10), `D:\olimp` (CSV и xlsx до 2023-11-30), код выгрузки 2023 г. — `D:\PycharmProjectsetpebet`. Живой API `old.olimpbet.kz` хранит счёт только ~14 месяцев назад; дыра в результатах Olimp — 2023-12…2025-08.
+
 Котировки: `snapshot = pre` (за 1–2 дня до матча, football-data) / `closing` / NULL (котировка со временем `taken_at`, сборщики). Polymarket: `price`, `bid`, `ask`, `ask_size`, `odds = 1/ask`.
 
 # Прежняя система (Polymarket / киберспорт)

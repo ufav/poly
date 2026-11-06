@@ -1,7 +1,7 @@
 name: paper bots control
 
-# Manual: Actions -> "paper bots control" -> Run workflow. stop keeps the data and leaves ~/polymarket/.paper-stopped,
-# so the deploy workflow only rebuilds and does not start the bots again until start removes it.
+# Manual: Actions -> "paper bots control" -> Run workflow. The paper bots are the compose profile "paper"; start
+# leaves ~/polymarket/.paper-running so that deploys keep them up, stop removes it (data and banks are kept).
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         options: [status, stop, start]
         default: status
       service:
-        description: "bot (all = every service of docker-compose.yml)"
+        description: "bot (all = every paper bot)"
         type: choice
         options: [all, paper-bot, paper-bot-dota, paper-bot-tennis]
         default: all
@@ -36,16 +36,16 @@ jobs:
             set -e
             cd ~/polymarket
             svc="${{ inputs.service }}"
-            [ "$svc" = "all" ] && svc=""
+            [ "$svc" = "all" ] && svc="" || true
             case "${{ inputs.action }}" in
               stop)
-                docker compose stop $svc
-                [ -z "$svc" ] && touch .paper-stopped || true
+                docker compose --profile paper stop $svc
+                [ -z "$svc" ] && rm -f .paper-running || true
                 ;;
               start)
-                rm -f .paper-stopped
-                docker compose start $svc || docker compose up -d $svc
+                touch .paper-running
+                docker compose --profile paper up -d $svc
                 ;;
             esac
-            docker compose ps -a
-            [ -f .paper-stopped ] && echo "deploy will NOT start the bots (.paper-stopped present)" || true
+            docker compose --profile paper ps -a
+            [ -f .paper-running ] && echo "paper bots: deploys keep them running" || echo "paper bots: off for deploys"

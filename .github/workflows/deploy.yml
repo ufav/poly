@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - "pmbot/**"
+      - "core/**"
+      - "data_engine/**"
+      - "workers/**"
+      - "migrations/**"
+      - "requirements-platform.txt"
       - "scripts/**"
       - "!scripts/research/**"
       - "Dockerfile"
@@ -32,10 +37,9 @@ jobs:
             set -e
             cd ~/polymarket
             git pull --ff-only
-            if [ -f .paper-stopped ]; then
-              docker compose build  # bots stopped via "paper bots control": rebuild only
-            else
-              docker compose up -d --build
+            docker compose up -d --build  # platform: postgres + worker
+            if [ -f .paper-running ]; then  # paper bots (profile "paper") only when started via "paper bots control"
+              docker compose --profile paper up -d --build
             fi
             docker image prune -f --filter label=app=polymarket-paper-bot
             docker compose ps

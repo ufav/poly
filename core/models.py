@@ -92,6 +92,7 @@ class Match(Base):
     __table_args__ = (Index("matches_sport_start", "sport_id", "start_time"),
                       Index("matches_home_start", "home_team_id", "start_time"),
                       Index("matches_away_start", "away_team_id", "start_time"),
+                      Index("matches_league", "league_id"), Index("matches_season", "season_id"),
                       CheckConstraint("status IN ('scheduled','live','finished','cancelled','postponed',"
                                       "'abandoned','walkover')", name="matches_status"))
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

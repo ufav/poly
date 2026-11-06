@@ -59,6 +59,9 @@ _GOAL = re.compile(r"(?:Первый|Второй|Третий|Четверты�
 _PREFIX = re.compile(r"^(УГЛ|ЖК|ФОЛ|ОФС|УДС|УД|АУТ|ВР) ")
 _SUFFIX = re.compile(r"^(.*\S)\s+\(([^()]+)\)$")
 _STAT_TOURN = (". Статистика", ". Специальные ставки", ". Показатели игроков")
+_STAT_WORDS = ("Статистика", "Специальные ставки", "Показатели игроков")  # also '... Статистика игрового дня'
+_STAT_SUFFIX = {"голы", "5 минут", "спец. ставки", "угловые", "желтые карточки", "фолы", "офсайды", "удары в створ",
+                "удары", "% владения мячом", "ауты", "удары от ворот", "штанги и перекладины"}
 
 
 def connect_tables(conn: sqlite3.Connection) -> None:
@@ -168,9 +171,9 @@ def classify(row: dict) -> tuple[str, dict] | None:
         return None
     home, away = teams
     values = str(row.get("values") or "")
-    stat_tourn = next((s for s in _STAT_TOURN if tourn.endswith(s)), None)
+    stat_tourn = next((s for s in _STAT_TOURN if tourn.endswith(s)), None) or         next((". " + w for w in _STAT_WORDS if w in tourn), None)
     label = _stat_label(home, away)
-    if label and not stat_tourn and not _PREFIX.match(home):
+    if label and not stat_tourn and not _PREFIX.match(home) and label[0] not in _STAT_SUFFIX:
         label = None  # '(жен)', '(мол)', '(19)', '(дубль)' outside stat tournaments: real teams
     if label or stat_tourn:
         stat, h, a = label or (stat_tourn.strip(". "), home, away)
