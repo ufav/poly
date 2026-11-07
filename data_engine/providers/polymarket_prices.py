@@ -12,10 +12,12 @@ Target series from the audit (analysis/pm_sports_audit.py): liquid football leag
 NHL. Volleyball, ITF and European hockey / basketball are too thin.
 
   python -u -m data_engine.providers.polymarket_prices
+  python -u -m data_engine.providers.polymarket_prices --history 60   # once: past games, for team mapping
 """
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import re
@@ -51,6 +53,7 @@ SERIES = {
 }
 CLUB_WORDS = {"fc", "afc", "cf", "sc", "ac", "ssc", "fk", "sk", "bk", "cd", "ud", "sd", "rc", "rcd", "sv", "vfl",
               "vfb", "tsg", "1", "calcio", "hotspur", "albion", "and", "hove"}
+GENDER = {"wta": "f", "wnba": "f"}
 KINDS = {"moneyline": None, "spreads": "spread", "totals": "total", "tennis_match_totals": "total_games"}
 
 
@@ -83,6 +86,13 @@ def norm_name(name: str | None) -> str:
     return "".join(words)
 
 
+def name_key(sport_id: int, name: str | None) -> str:
+    """Lookup key of a team name; tennis ignores the word order ('Elena Rybakina' = 'Rybakina Elena')."""
+    if sport_id != 2:
+        return norm_name(name)
+    return "".join(sorted(w for w in re.split(r"[^a-z0-9]+", norm_team_words(name)) if w))
+
+
 def norm_team_words(name: str | None) -> str:
     s = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
     return re.sub(r"(the|club|team)", " ", s)
@@ -96,13 +106,13 @@ class Resolver:
         self.own = {(t, e): i for t, e, i in s.execute(
             select(SourceEntity.entity_type, SourceEntity.external_id, SourceEntity.entity_id)
             .where(SourceEntity.source_id == SOURCE))}
-        # (sport, normalized name) -> senior men's team ids known under that name by any source
-        self.names: dict[tuple[int, str], set[int]] = {}
-        for sport_id, tid, name in s.execute(text(
-                "SELECT t.sport_id, t.id, n FROM teams t LEFT JOIN source_entities se ON se.entity_type = 'team' "
-                "AND se.entity_id = t.id, LATERAL (VALUES (t.name), (se.external_name)) v(n) WHERE n IS NOT NULL "
-                "AND t.sport_id IN (1, 2, 3, 5) AND t.gender = 'm' AND t.age_group IS NULL")):
-            self.names.setdefault((sport_id, norm_name(name)), set()).add(tid)
+        # (sport, gender, name key) -> senior team ids known under that name by any source
+        self.names: dict[tuple[int, str, str], set[int]] = {}
+        for sport_id, gender, tid, name in s.execute(text(
+                "SELECT t.sport_id, t.gender, t.id, n FROM teams t LEFT JOIN source_entities se "
+                "ON se.entity_type = 'team' AND se.entity_id = t.id, LATERAL (VALUES (t.name), (se.external_name)) "
+                "v(n) WHERE n IS NOT NULL AND t.sport_id IN (1, 2, 3, 5) AND t.age_group IS NULL")):
+            self.names.setdefault((sport_id, gender, name_key(sport_id, name)), set()).add(tid)
         self.fd_teams = set(s.scalars(select(SourceEntity.entity_id).where(SourceEntity.source_id == 1,
                                                                            SourceEntity.entity_type == "team")))
         self.country = dict(s.execute(text("SELECT id, country FROM teams WHERE sport_id IN (1, 2, 3, 5) "
@@ -136,11 +146,11 @@ class Resolver:
         return self._map("league", code, name, lid, "name")
 
     def known(self, sport_id: int, names: list[str | None], exclude: int | None = None,
-              country: str | None = None) -> int | None:
+              country: str | None = None, gender: str = "m") -> int | None:
         """The one known team under any of the names; among several, the one of the league's country, then the one
         football-data knows."""
         for n in names:
-            ids = (self.names.get((sport_id, norm_name(n))) or set()) - {exclude} if n else set()
+            ids = (self.names.get((sport_id, gender, name_key(sport_id, n))) or set()) - {exclude} if n else set()
             if len(ids) > 1 and country:
                 ids = {i for i in ids if self.country.get(i) == country} or ids
             if len(ids) > 1:
@@ -149,16 +159,17 @@ class Resolver:
                 return next(iter(ids))
         return None
 
-    def team(self, sport_id: int, key: str, name: str, alias: str | None = None, country: str | None = None) -> int:
+    def team(self, sport_id: int, key: str, name: str, alias: str | None = None, country: str | None = None,
+             gender: str = "m") -> int:
         if ("team", key) in self.own:
             return self.own[("team", key)]
-        tid = self.known(sport_id, [name, alias], country=country)
+        tid = self.known(sport_id, [name, alias], country=country, gender=gender)
         if tid:
             return self._map("team", key, name, tid, "name")
-        t = Team(sport_id=sport_id, name=name[:160], kind="player" if sport_id == 2 else "club")
+        t = Team(sport_id=sport_id, name=name[:160], kind="player" if sport_id == 2 else "club", gender=gender)
         self.s.add(t)
         self.s.flush()
-        self.names.setdefault((sport_id, norm_name(name)), set()).add(t.id)
+        self.names.setdefault((sport_id, gender, name_key(sport_id, name)), set()).add(t.id)
         return self._map("team", key, name, t.id)
 
     def match(self, e: dict, sport_id: int, league_id: int, home: int, away: int, start: dt.datetime) -> int:
@@ -251,8 +262,8 @@ def discover(http: HttpClient, now: dt.datetime) -> tuple[int, int]:
                 start = kickoff(e)
                 home, away = sides(e, sport_id)
                 country = SERIES[code][1]
-                hid = r.team(sport_id, home["key"], home["name"], home.get("alias"), country)
-                aid = r.team(sport_id, away["key"], away["name"], away.get("alias"), country)
+                hid = r.team(sport_id, home["key"], home["name"], home.get("alias"), country, GENDER.get(code, "m"))
+                aid = r.team(sport_id, away["key"], away["name"], away.get("alias"), country, GENDER.get(code, "m"))
                 mid = r.match(e, sport_id, league_id, hid, aid, start)
                 for mk in markets_of(e, home, away, sport == "football"):
                     line = Decimal(str(mk["line"])) if mk["line"] is not None else None
@@ -266,6 +277,52 @@ def discover(http: HttpClient, now: dt.datetime) -> tuple[int, int]:
                     n_markets += 1
             n_events += len(events)
     return n_events, n_markets
+
+
+def closed_events(http: HttpClient, series: str, now: dt.datetime, days: int) -> list[dict]:
+    """Closed events of a series whose game was within the last `days`; week windows on startDate (Gamma refuses
+    large offsets)."""
+    out, seen = [], set()
+    lo_game = now - dt.timedelta(days=days)
+    lo = lo_game - dt.timedelta(days=14)  # markets open some days before the game
+    while lo < now:
+        hi = lo + dt.timedelta(days=7)
+        offset = 0
+        while True:
+            page = http.get_json(f"{GAMMA}/events", {
+                "series_id": series, "closed": "true", "limit": 100, "offset": offset,
+                "start_date_min": lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "start_date_max": hi.strftime("%Y-%m-%dT%H:%M:%SZ")})
+            out += [e for e in page if e["id"] not in seen and lo_game <= kickoff(e) <= now]
+            seen.update(e["id"] for e in page)
+            if len(page) < 100 or offset >= 1900:
+                break
+            offset += 100
+        lo = hi
+    return out
+
+
+def history(http: HttpClient, now: dt.datetime, days: int) -> int:
+    """Teams and matches (no prices) of the closed events of the last `days`: the past games let
+    normalization.polymarket_links map Polymarket teams to ours by vote before the next games."""
+    n = 0
+    for code, series in series_ids(http).items():
+        sport_id = SPORT_ID[SERIES[code][0]]
+        events = [e for e in closed_events(http, series, now, days) if not e.get("parentEventId")
+                  and any(m.get("sportsMarketType") == "moneyline" for m in e.get("markets") or [])]
+        with session() as s:
+            r = Resolver(s)
+            league_id = r.league(code)
+            for e in events:
+                home, away = sides(e, sport_id)
+                hid = r.team(sport_id, home["key"], home["name"], home.get("alias"), SERIES[code][1],
+                             GENDER.get(code, "m"))
+                aid = r.team(sport_id, away["key"], away["name"], away.get("alias"), SERIES[code][1],
+                             GENDER.get(code, "m"))
+                r.match(e, sport_id, league_id, hid, aid, kickoff(e))
+        print(f"  {code}: {len(events)} closed events", flush=True)
+        n += len(events)
+    return n
 
 
 def books(tokens: list[str]) -> dict[str, dict]:
@@ -319,9 +376,15 @@ def snapshot(now: dt.datetime) -> int:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--history", type=int, metavar="DAYS", help="only add the closed events of the last DAYS")
+    args = ap.parse_args()
     now = dt.datetime.now(dt.timezone.utc)
     http = HttpClient(min_interval=0.25)
     t0 = time.time()
+    if args.history:
+        print(f"polymarket history: {history(http, now, args.history)} closed events in {time.time() - t0:.0f}s")
+        return
     events, markets = discover(http, now)
     quotes = snapshot(now)
     print(f"polymarket: {events} events, {markets} markets upserted, {quotes} changed quotes stored "

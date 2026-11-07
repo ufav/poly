@@ -15,7 +15,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    type_annotation_map = {dict[str, Any]: JSONB, list[Any]: JSONB}
+    type_annotation_map = {dict[str, Any]: JSONB(none_as_null=True), list[Any]: JSONB(none_as_null=True)}
 
 
 # ---------- reference ----------
@@ -109,8 +109,8 @@ class Match(Base):
     status: Mapped[str] = mapped_column(String(16), default="scheduled")
     home_score: Mapped[int | None] = mapped_column(SmallInteger)  # regular time (football) / sets / maps
     away_score: Mapped[int | None] = mapped_column(SmallInteger)
-    periods: Mapped[list[Any] | None] = mapped_column(JSONB)      # [[home, away], ...] halves / sets / quarters
-    result_extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # extra time, penalties, retirement ...
+    periods: Mapped[list[Any] | None] = mapped_column(JSONB(none_as_null=True))      # [[home, away], ...] halves / sets / quarters
+    result_extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))  # extra time, penalties, retirement ...
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
                                                     onupdate=func.now())
@@ -139,7 +139,7 @@ class MatchEvent(Base):
     minute: Mapped[int | None] = mapped_column(SmallInteger)
     side: Mapped[str | None] = mapped_column(String(1))          # h / a
     player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"))
-    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
 
 # ---------- markets and odds ----------
@@ -153,7 +153,7 @@ class Market(Base):
     kind: Mapped[str] = mapped_column(String(24))                # 1x2 / moneyline / total / spread / btts ...
     period: Mapped[int] = mapped_column(SmallInteger, default=0)
     line: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # total 2.5, handicap -1.5
-    extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # venue ids (Polymarket condition / tokens ...)
+    extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))  # venue ids (Polymarket condition / tokens ...)
 
 
 class OddsQuote(Base):

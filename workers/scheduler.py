@@ -32,6 +32,9 @@ class Job:
 JOBS = [
     # results of the last days of 5 sports + any day missing in the ~14 months the site keeps scores for
     Job("olimpbet_daily", ["data_engine.providers.olimpbet_results", "--daily"], at=dt.time(2, 0), timeout_min=240),
+    # those days -> matches of 5 sports, then Polymarket matches / teams linked to them by vote
+    Job("olimpbet_normalize", ["data_engine.normalization.olimpbet_results", "--days", "5"], at=dt.time(4, 0),
+        timeout_min=60),
     # Polymarket match markets of the target series + order book snapshots (the venue's price history)
     Job("polymarket_prices", ["data_engine.providers.polymarket_prices"], every_min=10, timeout_min=9),
 ]
