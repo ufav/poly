@@ -3,7 +3,8 @@ process with its own timeout; a failed step is logged and the next ones still ru
 Every source is incremental, so an hour without news costs a few requests:
 
   - Olimpbet results of today + yesterday (5 sports) -> matches;
-  - ESPN today + yesterday (NBA, WNBA, NHL, European cups), box scores of the games that just ended;
+  - ESPN today + yesterday (NBA, WNBA, NHL, European cups, top football leagues): box scores, lineups and player
+    stats of the games that just ended; NBA / WNBA / NHL injury reports (changes only);
   - football-data files by ETag (304 when the site did not update);
   - tennis-data only when the download page's 'Updated' date changed;
   - Polymarket price history of the games that ended in the last 2 days;
@@ -28,7 +29,8 @@ def steps() -> list[tuple[str, list[str], int]]:
     return [  # (name, python -m args, timeout minutes)
         ("olimpbet", ["data_engine.providers.olimpbet_results", "--recent", "2"], 20),
         ("olimpbet_normalize", ["data_engine.normalization.olimpbet_results", "--days", "2", "--no-links"], 15),
-        ("espn", ["data_engine.providers.espn", "--recent", "2"], 15),
+        ("espn", ["data_engine.providers.espn", "--recent", "2"], 20),
+        ("espn_injuries", ["data_engine.providers.espn_injuries"], 5),
         ("football_data", ["data_engine.providers.football_data"], 10),
         ("tennis_data", ["data_engine.providers.tennis_data", "--if-updated"], 15),
         ("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "2"], 20),

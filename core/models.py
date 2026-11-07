@@ -142,6 +142,41 @@ class MatchEvent(Base):
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
 
+class MatchPlayer(Base):
+    """Who played a match: lineup (starter / bench / did not play), minutes, the player's box score."""
+    __tablename__ = "match_players"
+    __table_args__ = (UniqueConstraint("match_id", "source_id", "player_id"),
+                      Index("match_players_player", "player_id"))
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id", ondelete="CASCADE"))
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
+    side: Mapped[str] = mapped_column(String(1))                 # h / a
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    starter: Mapped[bool | None] = mapped_column(Boolean)
+    position: Mapped[str | None] = mapped_column(String(8))
+    minutes: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    dnp_reason: Mapped[str | None] = mapped_column(String(64))   # did not play: coach's decision / injury ...
+    stats: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+
+
+class Injury(Base):
+    """Injury report snapshots (append-only): a row when a player's status / comment changes."""
+    __tablename__ = "injuries"
+    __table_args__ = (Index("injuries_player_time", "player_id", "fetched_at"),
+                      Index("injuries_team_time", "team_id", "fetched_at"))
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
+    sport_id: Mapped[int] = mapped_column(ForeignKey("sports.id"))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"))
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
+    status: Mapped[str] = mapped_column(String(32))              # Out / Day-To-Day / Questionable ... / Active
+    comment: Mapped[str | None] = mapped_column(Text)
+    reported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+
+
 # ---------- markets and odds ----------
 
 class Market(Base):
