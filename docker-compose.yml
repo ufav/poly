@@ -28,7 +28,24 @@ services:
       retries: 10
     logging: *logging
 
-  # scheduled jobs (workers/scheduler.py): Olimpbet results daily, later Polymarket prices and the rest
+  # nightly pg_dump to the host backup folder, the last 7 kept (workers/backup.sh; same image = same pg_dump)
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      BACKUP_AT: "03:30"
+      BACKUP_KEEP: "7"
+    entrypoint: ["/bin/bash", "/scripts/backup.sh"]
+    volumes:
+      - ${PGBACKUP_DIR:-/srv/sports/backups}:/backups
+      - ./workers/backup.sh:/scripts/backup.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  # scheduled jobs (workers/scheduler.py): hourly pipeline, Polymarket order books every 10 min, nightly repair
   worker:
     build: .
     restart: unless-stopped
