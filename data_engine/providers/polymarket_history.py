@@ -123,9 +123,13 @@ def main() -> None:
             league_id = r.league(code)
 
         def fetch_event(e: dict) -> tuple:
-            home, away = sides(e, sport_id)
-            mks = markets_of(e, home, away, football, closed=True)
-            return home, away, mks, [(mk, fetch_market(clob, mk, kickoff(e))) for mk in mks]
+            try:
+                home, away = sides(e, sport_id)
+                mks = markets_of(e, home, away, football, closed=True)
+                return home, away, mks, [(mk, fetch_market(clob, mk, kickoff(e))) for mk in mks]
+            except (ValueError, KeyError, IndexError) as err:  # one malformed event must not stop the run
+                print(f"  skipped {e.get('id')} {e.get('title', '')[:50]!r}: {err!r:.80}", flush=True)
+                return None, None, [], []
 
         n_code = 0
         # games over (kickoff + 6 h in the past), so the in-play window is complete
@@ -137,6 +141,8 @@ def main() -> None:
         for week in weeks:
             events = sorted((e for e in week if str(e["id"]) not in done), key=kickoff)
             for e, (home, away, mks, got) in zip(events, pool.map(fetch_event, events)):
+                if home is None:
+                    continue
                 ko = kickoff(e)
                 with session() as s:
                     r.s = s

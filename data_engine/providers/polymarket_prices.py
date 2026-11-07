@@ -199,8 +199,14 @@ def sides(e: dict, sport_id: int) -> list[dict]:
     if len(teams) == 2:
         teams = sorted(teams, key=lambda t: 0 if t.get("ordering") == "home" else 1)
         return [{"key": str(t["id"]), "name": t["name"], "alias": t.get("alias")} for t in teams]
-    ml = next(m for m in e["markets"] if m.get("sportsMarketType") == "moneyline")
-    return [{"key": f"name|{n}", "name": n, "alias": None} for n in json.loads(ml["outcomes"])[:2]]
+    ml = next((m for m in e["markets"] if m.get("sportsMarketType") == "moneyline"), None)
+    if ml:
+        return [{"key": f"name|{n}", "name": n, "alias": None} for n in json.loads(ml["outcomes"])[:2]]
+    # old football events without teams: 'Ipswich vs. Nottingham Forest' (home first)
+    names = [x.strip() for x in re.split(r"\s+vs\.?\s+", e["title"], maxsplit=1)]
+    if len(names) != 2:
+        raise ValueError(f"no sides in {e['title']!r}")
+    return [{"key": f"name|{n}", "name": n, "alias": None} for n in names]
 
 
 def side_of(name: str, home: dict, away: dict) -> str | None:

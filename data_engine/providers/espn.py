@@ -64,13 +64,18 @@ def box(summary: dict) -> dict[str, list[dict]]:
     return out
 
 
+def team_name(name: str | None) -> str | None:
+    """'UEFA Nations League: Netherlands' / 'UCL: Real Madrid' (ESPN's placeholder names) -> 'Netherlands'."""
+    return re.sub(r"^(UEFA [A-Za-z ]+League|UCL|UEL|UECL):\s*", "", name) if name else name
+
+
 def compact(e: dict, stats: dict) -> dict:
     c = e["competitions"][0]
     return {"id": e["id"], "date": e["date"], "status": c["status"]["type"].get("name"),
             "completed": c["status"]["type"].get("completed"), "neutral": c.get("neutralSite"),
             "season": (e.get("season") or {}).get("year"), "season_type": (e.get("season") or {}).get("type"),
             "note": (c.get("notes") or [{}])[0].get("headline") if c.get("notes") else None,
-            "teams": [{"id": t["team"]["id"], "name": t["team"].get("displayName"),
+            "teams": [{"id": t["team"]["id"], "name": team_name(t["team"].get("displayName")),
                        "short": t["team"].get("shortDisplayName"), "abbr": t["team"].get("abbreviation"),
                        "location": t["team"].get("location"), "side": t.get("homeAway"), "score": t.get("score"),
                        "winner": t.get("winner"), "shootout": t.get("shootoutScore"),
