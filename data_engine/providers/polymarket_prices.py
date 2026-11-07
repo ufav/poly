@@ -283,27 +283,36 @@ def discover(http: HttpClient, now: dt.datetime) -> tuple[int, int]:
     return n_events, n_markets
 
 
-def closed_events(http: HttpClient, series: str, now: dt.datetime, days: int) -> list[dict]:
-    """Closed events of a series whose game was within the last `days`; week windows on startDate (Gamma refuses
-    large offsets)."""
-    out, seen = [], set()
+def closed_event_weeks(http: HttpClient, series: str, now: dt.datetime, days: int):
+    """Closed main events of a series whose game was within the last `days`, yielded week by week of startDate
+    (Gamma refuses large offsets); markets trimmed to the kinds we keep (an NBA event has ~500 player markets)."""
+    seen = set()
     lo_game = now - dt.timedelta(days=days)
     lo = lo_game - dt.timedelta(days=45)  # markets open up to a month before the game (NHL)
     while lo < now:
         hi = lo + dt.timedelta(days=7)
-        offset = 0
+        week, offset = [], 0
         while True:
             page = http.get_json(f"{GAMMA}/events", {
                 "series_id": series, "closed": "true", "limit": 100, "offset": offset,
                 "start_date_min": lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "start_date_max": hi.strftime("%Y-%m-%dT%H:%M:%SZ")})
-            out += [e for e in page if e["id"] not in seen and lo_game <= kickoff(e) <= now]
-            seen.update(e["id"] for e in page)
+            for e in page:
+                if e["id"] in seen or e.get("parentEventId") or not (lo_game <= kickoff(e) <= now):
+                    continue
+                seen.add(e["id"])
+                e["markets"] = [m for m in e.get("markets") or [] if m.get("sportsMarketType") in KINDS]
+                if any(m.get("sportsMarketType") == "moneyline" for m in e["markets"]):
+                    week.append(e)
             if len(page) < 100 or offset >= 1900:
                 break
             offset += 100
+        yield week
         lo = hi
-    return out
+
+
+def closed_events(http: HttpClient, series: str, now: dt.datetime, days: int) -> list[dict]:
+    return [e for week in closed_event_weeks(http, series, now, days) for e in week]
 
 
 def history(http: HttpClient, now: dt.datetime, days: int) -> int:

@@ -41,6 +41,8 @@ JOBS = [
     # minute price series of the games that ended (the venue's history: no bid / ask, all lines and in play)
     Job("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "3"], at=dt.time(5, 0),
         timeout_min=120),
+    # football-data.co.uk results / stats / bookmaker odds (the site updates twice a week; new rows only)
+    Job("football_data", ["data_engine.providers.football_data"], at=dt.time(6, 0), timeout_min=30),
 ]
 
 

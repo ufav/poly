@@ -25,7 +25,7 @@ from sqlalchemy import insert, text
 
 from core.db import session
 from core.models import OddsQuote
-from data_engine.providers.polymarket_prices import (GENDER, SERIES, SOURCE, SPORT_ID, Resolver, closed_events, kickoff,
+from data_engine.providers.polymarket_prices import (GENDER, SERIES, SOURCE, SPORT_ID, Resolver, closed_event_weeks, kickoff,
                                                      markets_of, series_ids, sides, upsert_market)
 from pmbot.http import HttpClient
 from pmbot.polymarket import CLOB
@@ -114,11 +114,6 @@ def main() -> None:
     for code in codes:
         sport_id = SPORT_ID[SERIES[code][0]]
         football = SERIES[code][0] == "football"
-        # games over (kickoff + 6 h in the past), so the in-play window is complete
-        events = [e for e in closed_events(http, ids[code], now - dt.timedelta(hours=6), args.days)
-                  if not e.get("parentEventId") and str(e["id"]) not in done
-                  and any(m.get("sportsMarketType") == "moneyline" for m in e.get("markets") or [])]
-        print(f"{code}: {len(events)} closed events to load", flush=True)
         with session() as s:
             r = Resolver(s)  # loads every team name once per series
             league_id = r.league(code)
@@ -128,28 +123,33 @@ def main() -> None:
             mks = markets_of(e, home, away, football, closed=True)
             return home, away, mks, [(mk, fetch_market(clob, mk, kickoff(e))) for mk in mks]
 
-        events.sort(key=kickoff)
-        for n, (e, (home, away, mks, got)) in enumerate(zip(events, pool.map(fetch_event, events)), 1):
-            ko = kickoff(e)
-            with session() as s:
-                r.s = s
-                g = GENDER.get(code, "m")
-                hid = r.team(sport_id, home["key"], home["name"], home.get("alias"), SERIES[code][1], g)
-                aid = r.team(sport_id, away["key"], away["name"], away.get("alias"), SERIES[code][1], g)
-                mid = r.match(e, sport_id, league_id, hid, aid, ko)
-                market_id = {id(mk): upsert_market(s, mid, mk, e["id"]) for mk in mks}
-                rows = [{"market_id": market_id[id(mk)], "outcome": outcome, "source_id": SOURCE,
-                         "bookmaker": "polymarket", "price": round(p, 5), "odds": round(1 / p, 3) if p > 0 else None,
-                         "snapshot": "history", "taken_at": t}
-                        for mk, by_outcome in got for outcome, pts in by_outcome.items() for t, p in pts]
-                for c in range(0, len(rows), 5000):
-                    s.execute(insert(OddsQuote), rows[c:c + 5000])
-            total_q += len(rows)
-            total_ev += 1
-            if n % 25 == 0 or n == len(events):
-                print(f"  [{n:5d}/{len(events)}] {ko:%Y-%m-%d} {e['title'][:40]:<40} markets {len(mks):3d}  "
-                      f"points {len(rows):5d}  total {total_q:9d}  requests {clob.requests:7d}  "
-                      f"{(time.time() - t0) / 60:5.1f} min", flush=True)
+        n_code = 0
+        # games over (kickoff + 6 h in the past), so the in-play window is complete
+        for week in closed_event_weeks(http, ids[code], now - dt.timedelta(hours=6), args.days):
+            events = sorted((e for e in week if str(e["id"]) not in done), key=kickoff)
+            for e, (home, away, mks, got) in zip(events, pool.map(fetch_event, events)):
+                ko = kickoff(e)
+                with session() as s:
+                    r.s = s
+                    g = GENDER.get(code, "m")
+                    hid = r.team(sport_id, home["key"], home["name"], home.get("alias"), SERIES[code][1], g)
+                    aid = r.team(sport_id, away["key"], away["name"], away.get("alias"), SERIES[code][1], g)
+                    mid = r.match(e, sport_id, league_id, hid, aid, ko)
+                    market_id = {id(mk): upsert_market(s, mid, mk, e["id"]) for mk in mks}
+                    rows = [{"market_id": market_id[id(mk)], "outcome": outcome, "source_id": SOURCE,
+                             "bookmaker": "polymarket", "price": round(p, 5),
+                             "odds": round(1 / p, 3) if p > 0 else None, "snapshot": "history", "taken_at": t}
+                            for mk, by_outcome in got for outcome, pts in by_outcome.items() for t, p in pts]
+                    for c in range(0, len(rows), 5000):
+                        s.execute(insert(OddsQuote), rows[c:c + 5000])
+                done.add(str(e["id"]))
+                total_q += len(rows)
+                total_ev += 1
+                n_code += 1
+            if events:
+                print(f"  {code} {kickoff(events[-1]):%Y-%m-%d}: {n_code:5d} events  points {total_q:9d}  "
+                      f"requests {clob.requests:7d}  {(time.time() - t0) / 60:6.1f} min", flush=True)
+        print(f"{code}: {n_code} events loaded", flush=True)
     print(f"done: {total_ev} events, {total_q} price points, {clob.requests} requests in "
           f"{(time.time() - t0) / 60:.1f} min")
 
