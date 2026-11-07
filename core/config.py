@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     data_dir: Path = ROOT / "data"
+    # AI Engine (docs/md1.md 7): web search for the news of the shortlisted matches, LLM through OpenRouter
+    tavily_api_key: str = ""
+    openrouter_api_key: str = ""
+    openrouter_model: str = "deepseek/deepseek-chat"
 
 
 @lru_cache

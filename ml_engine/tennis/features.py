@@ -100,6 +100,8 @@ def build(m: pd.DataFrame) -> pd.DataFrame:
     n_all = defaultdict(int)
     n_s = defaultdict(int)
     last10 = defaultdict(lambda: deque(maxlen=10))
+    over7 = defaultdict(lambda: deque(maxlen=7))     # result - Elo expectation (form adjusted for the opponents)
+    over7_s = defaultdict(lambda: deque(maxlen=7))
     last10_s = defaultdict(lambda: deque(maxlen=10))
     hist = defaultdict(list)                          # player -> [(time, games)]
     rank = {}                                         # player -> (rank, points)
@@ -125,6 +127,9 @@ def build(m: pd.DataFrame) -> pd.DataFrame:
             f[f"{side}_points"] = r[1] if r else np.nan
             f[f"{side}_form10"] = np.mean(last10[p]) if last10[p] else np.nan
             f[f"{side}_form10_s"] = np.mean(last10_s[(p, surf)]) if surf and last10_s[(p, surf)] else np.nan
+            f[f"{side}_form7"] = np.mean(list(last10[p])[-7:]) if last10[p] else np.nan
+            f[f"{side}_over7"] = np.mean(over7[p]) if over7[p] else np.nan
+            f[f"{side}_over7_s"] = np.mean(over7_s[(p, surf)]) if surf and over7_s[(p, surf)] else np.nan
             past = hist[p]
             f[f"{side}_m7"] = sum(1 for x, _ in past[-12:] if (ts - x).days < 7)
             f[f"{side}_m14"] = sum(1 for x, _ in past[-20:] if (ts - x).days < 14)
@@ -168,8 +173,13 @@ def build(m: pd.DataFrame) -> pd.DataFrame:
             last10_s[(a, surf)].append(1 - won)
         last10[h].append(won)
         last10[a].append(1 - won)
+        over7[h].append(won - exp)
+        over7[a].append((1 - won) - (1 - exp))
+        if surf:
+            over7_s[(h, surf)].append(won - exp)
+            over7_s[(a, surf)].append((1 - won) - (1 - exp))
         h2h[key].append((ts, won if h == key[0] else 1 - won))
     feats = pd.DataFrame(rows)
-    for k in ("form10", "form10_s", "m7", "m14", "g7", "rest", "points"):
+    for k in ("form10", "form10_s", "form7", "over7", "over7_s", "m7", "m14", "g7", "rest", "points"):
         feats[f"d_{k}"] = feats[f"h_{k}"] - feats[f"a_{k}"]
     return feats
