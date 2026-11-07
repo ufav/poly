@@ -9,6 +9,7 @@ without a Russian name yet: they equal the names of the local Olimp archive (200
 
   python -u -m data_engine.providers.olimpbet_results --backfill [--days 430] [--sports football,hockey]
   python -u -m data_engine.providers.olimpbet_results --daily      # last 3 days, for a daily scheduled run
+  python -u -m data_engine.providers.olimpbet_results --recent 2   # hourly: today + yesterday again
 """
 
 from __future__ import annotations
@@ -83,22 +84,26 @@ def main() -> None:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--backfill", action="store_true", help="every day of the last --days not fetched yet")
     mode.add_argument("--daily", action="store_true", help=f"the last {REFRESH_DAYS} days again + missing ones")
+    mode.add_argument("--recent", type=int, metavar="N",
+                      help="hourly: today and the N-1 days before again (results come in during the day) + missing")
     ap.add_argument("--days", type=int, default=430, help="backfill depth (scores are kept ~14 months)")
     ap.add_argument("--sports", default=",".join(SPORTS))
     ap.add_argument("--interval", type=float, default=2.5, help="seconds between requests (site is protected)")
     args = ap.parse_args()
 
     sports = [x.strip() for x in args.sports.split(",") if x.strip()]
-    yesterday = dt.date.today() - dt.timedelta(days=1)
+    # site days are +05:00; --recent includes today (finished games of the running day)
+    site_today = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=5)).date()
+    yesterday = site_today if args.recent else site_today - dt.timedelta(days=1)
     first = yesterday - dt.timedelta(days=args.days - 1)
     days = [first + dt.timedelta(days=i) for i in range(args.days)]
     with session() as s:
         have_en, have_ru = known(s, "en"), known(s, "ru")
         ru_ids = {sp: ru_competitors(s, sp) for sp in sports}
-    refresh = {yesterday - dt.timedelta(days=i) for i in range(REFRESH_DAYS)}
+    refresh = {yesterday - dt.timedelta(days=i) for i in range(args.recent or REFRESH_DAYS)}
     todo = [(sp, d) for d in days for sp in sports
-            if f"{sp}|{d.isoformat()}" not in have_en or (args.daily and d in refresh)]
-    if args.daily:
+            if f"{sp}|{d.isoformat()}" not in have_en or ((args.daily or args.recent) and d in refresh)]
+    if args.daily or args.recent:
         todo = [(sp, d) for sp, d in todo if d >= first]
     print(f"Olimpbet results -> PostgreSQL raw_payloads: {len(todo)} sport-days to fetch "
           f"({', '.join(sports)}; {first} .. {yesterday})", flush=True)

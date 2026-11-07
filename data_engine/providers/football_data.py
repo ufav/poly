@@ -19,29 +19,49 @@ import json
 import time
 from decimal import Decimal
 
-from sqlalchemy import insert, select, text
+from sqlalchemy import delete, insert, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.db import session
-from core.models import Market, Match, MatchStatistic, OddsQuote, SourceEntity
+from core.models import Market, Match, MatchStatistic, OddsQuote, RawPayload, SourceEntity
 from data_engine.legacy.football_data import (BROKEN_FILES, OU25, SOURCE, SPORT, STATS, Refs, kickoff, quotes_1x2,
                                               quotes_ah, quotes_two_way, season_name)
 from pmbot import footballdata as fd
 from pmbot.http import HttpClient
 
+BASE = "https://football-data.co.uk"  # www. redirects here; conditional requests by the ETag of each file
 
-def fetch(http: HttpClient, seasons: int) -> list[dict]:
+
+def fetch(http: HttpClient, seasons: int) -> tuple[list[dict], dict[str, str]]:
+    """Rows of the files changed since the last run: conditional requests by the ETag kept in raw_payloads
+    (kind 'fd_etag'), so an hourly run downloads nothing when the site did not update (304)."""
     first = fd.current_season() - seasons + 1
-    out = []
+    with session() as s:
+        etags = dict(s.execute(select(RawPayload.external_id, RawPayload.payload["etag"].astext).where(
+            RawPayload.source_id == SOURCE, RawPayload.kind == "fd_etag")).all())
+    out, changed = [], {}
     for path, div, season in fd.files(first, extra=True):
-        r = http.get(f"{fd.BASE}/{path}")
+        r = http.get(f"{BASE}/{path}", headers={"If-None-Match": etags[path]} if etags.get(path) else None)
+        if r.status_code == 304:
+            continue
         if r.status_code == 404 or not r.content.lstrip(b"\xef\xbb\xbf").startswith((b"Div", b"Country")):
             continue  # league not covered that season
         r.raise_for_status()
+        if r.headers.get("etag"):
+            changed[path] = r.headers["etag"]
         rows = [{f: rec.get(f) for f in fd.FIELDS} for rec in fd.parse_csv(r.content, div, season)]
         out += [x for x in rows if x["season"] is not None and x["season"] >= first
                 and (x["div"], x["season"]) not in BROKEN_FILES]
-    return out
+    return out, changed
+
+
+def save_etags(changed: dict[str, str]) -> None:
+    with session() as s:
+        for path, etag in changed.items():
+            s.execute(delete(RawPayload).where(RawPayload.source_id == SOURCE, RawPayload.kind == "fd_etag",
+                                               RawPayload.external_id == path))
+            s.execute(insert(RawPayload).values(source_id=SOURCE, kind="fd_etag", external_id=path,
+                                                payload={"etag": etag}))
 
 
 def key(r: dict) -> str:
@@ -112,7 +132,7 @@ def main() -> None:
     args = ap.parse_args()
     t0 = time.time()
     http = HttpClient(min_interval=1.0, retries=4, timeout=60, headers={"Accept": "text/csv,*/*"})
-    rows = fetch(http, args.seasons)
+    rows, changed = fetch(http, args.seasons)
     with session() as s:
         existing = set(s.scalars(select(SourceEntity.external_id).where(
             SourceEntity.source_id == SOURCE, SourceEntity.entity_type == "match")))
@@ -126,8 +146,9 @@ def main() -> None:
             c = import_rows(s, Refs(s), sorted(part, key=lambda r: r["date"]))
         total = {k: total[k] + c[k] for k in total}
         print(f"  {div:<4} {season}: +{c['new']} new, {c['linked']} linked, {c['odds']} odds", flush=True)
-    print(f"football-data: {len(rows)} rows in the files, {sum(map(len, groups.values()))} new: {total} "
-          f"in {time.time() - t0:.0f}s")
+    save_etags(changed)  # after the import: a failed run fetches the files again
+    print(f"football-data: {len(changed)} files changed, {len(rows)} rows in them, "
+          f"{sum(map(len, groups.values()))} new: {total} in {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

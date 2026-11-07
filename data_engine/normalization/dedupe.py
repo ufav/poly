@@ -147,7 +147,7 @@ def merge_match(s, keep: int, drop: int) -> None:
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sport", type=int, action="append", help="sport id (repeatable; default 1, 2, 3, 5)")
+    ap.add_argument("--sport", type=int, action="append", help="sport id (repeatable; default all five)")
     ap.add_argument("--merge-team", type=int, nargs=2, metavar=("SRC", "DST"))
     ap.add_argument("--since", default="2024-06-01", help="matches from this date (the history horizon)")
     ap.add_argument("--vote-source", type=int, help="first merge the teams only this source created, by vote")
@@ -157,7 +157,7 @@ def main() -> None:
         if args.merge_team:
             merge_team(s, *args.merge_team)
             print(f"team {args.merge_team[0]} -> {args.merge_team[1]}")
-        for sport in args.sport or [1, 2, 3, 5]:
+        for sport in args.sport or [1, 2, 3, 4, 5]:
             if args.vote_source:
                 print(f"sport {sport}: {vote_teams(s, args.vote_source, sport, args.since)} teams of source "
                       f"{args.vote_source} merged by vote", flush=True)

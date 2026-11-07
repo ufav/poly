@@ -19,21 +19,25 @@ class HttpClient:
         self._retries = retries
         self._last = 0.0
 
-    def get(self, url: str, params: dict | None = None) -> httpx.Response:
+    def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> httpx.Response:
+        r, error = None, None
         for attempt in range(self._retries):
             wait = self._min_interval - (time.monotonic() - self._last)
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
             try:
-                r = self._client.get(url, params=params)
-            except httpx.TransportError:
+                r = self._client.get(url, params=params, headers=headers)
+            except httpx.TransportError as e:
+                error = e
                 time.sleep(2**attempt)
                 continue
             if r.status_code == 429 or r.status_code >= 500:
                 time.sleep(2**attempt)
                 continue
             return r
+        if r is None:  # every attempt failed to connect
+            raise error
         r.raise_for_status()
         return r
 

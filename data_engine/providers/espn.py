@@ -11,6 +11,7 @@ ESPN has no odds of past games.
    winner +1), the regulation score is kept in result_extra.
 
   python -u -m data_engine.providers.espn [--since 2024-11-01] [--leagues nba,nhl]
+  python -u -m data_engine.providers.espn --recent 2      # hourly: today + yesterday
 """
 
 from __future__ import annotations
@@ -19,9 +20,11 @@ import argparse
 import datetime as dt
 import json
 import re
+import sys
 import time
 from collections import defaultdict
 
+import httpx
 from sqlalchemy import delete, insert, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -106,6 +109,41 @@ def fetch(http: HttpClient, code: str, lo: dt.date, hi: dt.date) -> list[dict]:
                 stats = {}
         out.append(compact(e, stats))
     return out
+
+
+def update_days(http: HttpClient, code: str, days: list[dt.date]) -> list[str]:
+    """Hourly: the scoreboards of these days merged into their month payloads; a box score is fetched only for a
+    game that finished since the last run. Returns the month keys touched."""
+    path = LEAGUES[code][0]
+    by_month = defaultdict(list)
+    for d in days:
+        by_month[f"{code}|{d:%Y-%m}"].append(d)
+    for key, month_days in by_month.items():
+        with session() as s:
+            stored = s.scalar(select(RawPayload.payload).where(RawPayload.source_id == SOURCE,
+                                                               RawPayload.kind == "espn_month",
+                                                               RawPayload.external_id == key))
+        events = {e["id"]: e for e in (stored or {}).get("events", [])}
+        for d in month_days:
+            for e in http.get_json(f"{API}/{path}/scoreboard", {"dates": f"{d:%Y%m%d}", "limit": 300}).get(
+                    "events") or []:
+                prev = events.get(e["id"])
+                completed = e["competitions"][0]["status"]["type"].get("completed")
+                if prev and prev["completed"] and any(t.get("stats") for t in prev["teams"]):
+                    continue  # finished and complete already
+                stats = {}
+                if completed:
+                    try:
+                        stats = box(http.get_json(f"{API}/{path}/summary", {"event": e["id"]}))
+                    except Exception:
+                        stats = {}
+                events[e["id"]] = compact(e, stats)
+        with session() as s:
+            s.execute(delete(RawPayload).where(RawPayload.source_id == SOURCE, RawPayload.kind == "espn_month",
+                                               RawPayload.external_id == key))
+            s.execute(insert(RawPayload).values(source_id=SOURCE, kind="espn_month", external_id=key,
+                                                payload={"events": sorted(events.values(), key=lambda e: e["date"])}))
+    return list(by_month)
 
 
 def num(v) -> float | None:
@@ -312,12 +350,24 @@ def main() -> None:
     ap.add_argument("--since", default="2024-11-01")
     ap.add_argument("--leagues", default=",".join(LEAGUES))
     ap.add_argument("--refresh-days", type=int, default=3, help="re-fetch the month holding the last N days")
+    ap.add_argument("--recent", type=int, metavar="N", help="hourly: only today and the N-1 days before (UTC)")
     args = ap.parse_args()
     since = dt.date.fromisoformat(args.since)
     yesterday = dt.date.today() - dt.timedelta(days=1)
-    http = HttpClient(min_interval=0.3, retries=5, timeout=30)
+    http = HttpClient(min_interval=0.3, retries=3, timeout=15)
     t0 = time.time()
+    failed = False
     for code in [c.strip() for c in args.leagues.split(",") if c.strip()]:
+        if args.recent:
+            today = dt.datetime.now(dt.timezone.utc).date()
+            try:
+                keys = update_days(http, code, [today - dt.timedelta(days=i) for i in range(args.recent - 1, -1, -1)])
+            except httpx.HTTPError as e:  # ESPN unreachable now and then: skip the rest, the next hour retries
+                print(f"{code}: ESPN not reachable ({e!r:.100}), the other leagues wait for the next run", flush=True)
+                failed = True
+                break
+            print(f"{code}: {normalize(code, keys)}", flush=True)
+            continue
         with session() as s:
             have = set(s.scalars(select(RawPayload.external_id).where(RawPayload.source_id == SOURCE,
                                                                       RawPayload.kind == "espn_month",
@@ -339,6 +389,8 @@ def main() -> None:
                   f"{(time.time() - t0) / 60:.1f} min", flush=True)
         print(f"{code}: {normalize(code, keys)}", flush=True)
     print(f"done in {(time.time() - t0) / 60:.1f} min")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

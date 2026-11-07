@@ -11,6 +11,7 @@ result if it has none -, else a new match is created with home / away in name or
 loser). Rows already imported are skipped.
 
   python -u -m data_engine.providers.tennis_data [--years 2024,2025,2026]
+  python -u -m data_engine.providers.tennis_data --if-updated     # hourly
 """
 
 from __future__ import annotations
@@ -25,11 +26,11 @@ import unicodedata
 from collections import defaultdict
 
 import pandas as pd
-from sqlalchemy import insert, select, text
+from sqlalchemy import delete, insert, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.db import session
-from core.models import League, Market, Match, MatchStatistic, OddsQuote, SourceEntity, Team
+from core.models import League, Market, Match, MatchStatistic, OddsQuote, RawPayload, SourceEntity, Team
 from pmbot.http import HttpClient
 
 SOURCE = 5   # tennis_data
@@ -111,15 +112,16 @@ class Players:
         return tid
 
 
-def file_links(http: HttpClient, years: list[int]) -> list[tuple[str, int, str]]:
-    """(tour, year, url) from the download page."""
+def file_links(http: HttpClient, years: list[int]) -> tuple[list[tuple[str, int, str]], str | None]:
+    """(tour, year, url) from the download page + its 'Updated: ...' date."""
     page = http.get(f"{BASE}/alldata.php").text
     out = []
     for href in re.findall(r'href="([^"]+/(\d{4})(w?)/\d{4}\.xlsx?)"', page, re.IGNORECASE):
         path, year, w = href
         if int(year) in years:
             out.append(("WTA" if w else "ATP", int(year), f"{BASE}/{path.lstrip('/')}"))
-    return out
+    updated = re.search(r"Updated:\s*([^<&]+)", page)
+    return out, updated[1].strip() if updated else None
 
 
 def num(v):
@@ -242,11 +244,23 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     this = dt.date.today().year
     ap.add_argument("--years", default=f"{this - 2},{this - 1},{this}")
+    ap.add_argument("--if-updated", action="store_true",
+                    help="hourly: only when the site's 'Updated' date changed, and only this year's files "
+                         "(+ last year's in January)")
     args = ap.parse_args()
     years = [int(y) for y in args.years.split(",")]
+    if args.if_updated:
+        years = [this - 1, this] if dt.date.today().month == 1 else [this]
     http = HttpClient(min_interval=2.0, retries=4, timeout=120)
     t0 = time.time()
-    links = file_links(http, years)
+    links, updated = file_links(http, years)
+    if args.if_updated:
+        with session() as s:
+            last = s.scalar(select(RawPayload.payload["updated"].astext).where(
+                RawPayload.source_id == SOURCE, RawPayload.kind == "td_updated"))
+        if updated and updated == last:
+            print(f"tennis-data: not updated since {updated}")
+            return
     # newest first: the players of the recent years are linked through Olimpbet matches, older rows reuse them
     for tour, year, url in sorted(links, key=lambda x: (-x[1], x[0])):
         r = http.get(url)
@@ -255,7 +269,12 @@ def main() -> None:
         df = df[df["Date"].notna()].copy()
         df["Date"] = pd.to_datetime(df["Date"])
         print(f"{tour} {year}: {len(df)} rows -> {import_file(tour, year, df)}", flush=True)
-    print(f"done in {(time.time() - t0) / 60:.1f} min")
+    if updated:
+        with session() as s:
+            s.execute(delete(RawPayload).where(RawPayload.source_id == SOURCE, RawPayload.kind == "td_updated"))
+            s.execute(insert(RawPayload).values(source_id=SOURCE, kind="td_updated", external_id="alldata",
+                                                payload={"updated": updated}))
+    print(f"done in {(time.time() - t0) / 60:.1f} min (site updated: {updated})")
 
 
 if __name__ == "__main__":

@@ -31,18 +31,13 @@ class Job:
 
 
 JOBS = [
-    # results of the last days of 5 sports + any day missing in the ~14 months the site keeps scores for
-    Job("olimpbet_daily", ["data_engine.providers.olimpbet_results", "--daily"], at=dt.time(2, 0), timeout_min=240),
-    # those days -> matches of 5 sports, then Polymarket matches / teams linked to them by vote
-    Job("olimpbet_normalize", ["data_engine.normalization.olimpbet_results", "--days", "5"], at=dt.time(4, 0),
-        timeout_min=60),
-    # Polymarket match markets of the target series + order book snapshots (the venue's price history)
+    # hourly: Olimpbet / ESPN / football-data / tennis-data / Polymarket price history -> matches, links, dedupe
+    Job("pipeline", ["workers.pipeline"], every_min=60, timeout_min=120),
+    # Polymarket match markets of the target series + order book snapshots (bid / ask / size)
     Job("polymarket_prices", ["data_engine.providers.polymarket_prices"], every_min=10, timeout_min=9),
-    # minute price series of the games that ended (the venue's history: no bid / ask, all lines and in play)
-    Job("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "3"], at=dt.time(5, 0),
-        timeout_min=120),
-    # football-data.co.uk results / stats / bookmaker odds (the site updates twice a week; new rows only)
-    Job("football_data", ["data_engine.providers.football_data"], at=dt.time(6, 0), timeout_min=30),
+    # nightly repair: any Olimpbet day of the ~14 months the site keeps scores for that is still missing
+    Job("olimpbet_backfill", ["data_engine.providers.olimpbet_results", "--backfill"], at=dt.time(2, 0),
+        timeout_min=240),
 ]
 
 
