@@ -61,8 +61,9 @@ class Players:
         self.own = {e: i for e, i in s.execute(select(SourceEntity.external_id, SourceEntity.entity_id).where(
             SourceEntity.source_id == SOURCE, SourceEntity.entity_type == "team"))}
         n_matches = dict(s.execute(text("""
-            SELECT t.id, count(m.id) FROM teams t JOIN matches m ON t.id IN (m.home_team_id, m.away_team_id)
-            WHERE t.sport_id = :sp AND t.kind = 'player' GROUP BY t.id"""), {"sp": SPORT}).all())
+            SELECT tid, count(*) FROM (SELECT home_team_id tid FROM matches WHERE sport_id = :sp
+                                       UNION ALL SELECT away_team_id FROM matches WHERE sport_id = :sp) x
+            GROUP BY tid"""), {"sp": SPORT}).all())
         self.index: dict[tuple[str, str], list[tuple[int, list[str], int]]] = defaultdict(list)
         for tid, name, gender in s.execute(text("SELECT id, name, gender FROM teams WHERE sport_id = :sp "
                                                 "AND kind = 'player'"), {"sp": SPORT}):

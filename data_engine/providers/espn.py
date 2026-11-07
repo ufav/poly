@@ -139,8 +139,10 @@ class Refs:
         self.sport_id = sport_id
         self.own = {e: i for e, i in s.execute(select(SourceEntity.external_id, SourceEntity.entity_id).where(
             SourceEntity.source_id == SOURCE, SourceEntity.entity_type == "team"))}
-        n = dict(s.execute(text("""SELECT t.id, count(m.id) FROM teams t JOIN matches m
-            ON t.id IN (m.home_team_id, m.away_team_id) WHERE t.sport_id = :sp GROUP BY t.id"""), {"sp": sport_id}))
+        n = dict(s.execute(text("""
+            SELECT tid, count(*) FROM (SELECT home_team_id tid FROM matches WHERE sport_id = :sp
+                                       UNION ALL SELECT away_team_id FROM matches WHERE sport_id = :sp) x
+            GROUP BY tid"""), {"sp": sport_id}).all())
         self.by_name: dict[str, list[tuple[int, int]]] = defaultdict(list)
         for tid, name in s.execute(text("""SELECT t.id, v.n FROM teams t LEFT JOIN source_entities se
               ON se.entity_type = 'team' AND se.entity_id = t.id, LATERAL (VALUES (t.name), (se.external_name)) v(n)

@@ -318,9 +318,10 @@ def normalize(sport: str, since: dt.date | None, done: set[str]) -> Counter:
 def fix_tennis_gender(s) -> int:
     """A player's gender = that of most of their leagues (the first tournament may be mixed / misnamed)."""
     return s.execute(text("""
-        WITH g AS (SELECT t.id, mode() WITHIN GROUP (ORDER BY l.gender) g FROM teams t
-                   JOIN matches m ON t.id IN (m.home_team_id, m.away_team_id) JOIN leagues l ON l.id = m.league_id
-                   WHERE t.sport_id = 2 AND l.gender IN ('m', 'f') GROUP BY t.id)
+        WITH side AS (SELECT home_team_id tid, league_id FROM matches WHERE sport_id = 2
+                      UNION ALL SELECT away_team_id, league_id FROM matches WHERE sport_id = 2),
+             g AS (SELECT side.tid id, mode() WITHIN GROUP (ORDER BY l.gender) g FROM side
+                   JOIN leagues l ON l.id = side.league_id WHERE l.gender IN ('m', 'f') GROUP BY side.tid)
         UPDATE teams t SET gender = g.g FROM g WHERE t.id = g.id AND t.gender <> g.g AND t.kind <> 'pair'""")).rowcount
 
 
