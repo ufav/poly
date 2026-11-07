@@ -211,10 +211,11 @@ def side_of(name: str, home: dict, away: dict) -> str | None:
     return None
 
 
-def markets_of(e: dict, home: dict, away: dict, football: bool) -> list[dict]:
-    """Market rows {kind, line, tokens {outcome: token}, conditions [...]} of one event."""
+def markets_of(e: dict, home: dict, away: dict, football: bool, closed: bool = False) -> list[dict]:
+    """Market rows {kind, line, tokens {outcome: token}, conditions [...]} of one event; closed markets only with
+    closed=True (price history of past games)."""
     out = []
-    ml = [m for m in e["markets"] if m.get("sportsMarketType") == "moneyline" and not m.get("closed")]
+    ml = [m for m in e["markets"] if m.get("sportsMarketType") == "moneyline" and (closed or not m.get("closed"))]
     if football and len(ml) == 3:
         tokens = {}
         for m in ml:
@@ -227,7 +228,7 @@ def markets_of(e: dict, home: dict, away: dict, football: bool) -> list[dict]:
             out.append({"kind": "1x2", "line": None, "tokens": tokens, "conditions": [m["conditionId"] for m in ml]})
     for m in e["markets"]:
         t = m.get("sportsMarketType")
-        if m.get("closed") or t not in KINDS or (t == "moneyline" and football):
+        if (m.get("closed") and not closed) or t not in KINDS or (t == "moneyline" and football):
             continue
         outs, toks = json.loads(m["outcomes"]), json.loads(m["clobTokenIds"])
         if t in ("totals", "tennis_match_totals"):
@@ -245,6 +246,16 @@ def markets_of(e: dict, home: dict, away: dict, football: bool) -> list[dict]:
         out.append({"kind": KINDS[t] or "moneyline", "line": line if t == "spreads" else None,
                     "tokens": {s0: toks[0], s1: toks[1]}, "conditions": [m["conditionId"]]})
     return out
+
+
+def upsert_market(s, match_id: int, mk: dict, event_id) -> int:
+    """The market row of a match (Polymarket tokens / conditions in extra, merged into a row another source made)."""
+    line = Decimal(str(mk["line"])) if mk["line"] is not None else None
+    extra = {"tokens": mk["tokens"], "conditions": mk["conditions"], "event": str(event_id)}
+    stmt = pg_insert(Market).values(match_id=match_id, kind=mk["kind"], period=0, line=line, extra=extra)
+    return s.scalar(stmt.on_conflict_do_update(
+        constraint="markets_match_id_kind_period_line_key",
+        set_={"extra": text("COALESCE(markets.extra, '{}'::jsonb) || excluded.extra")}).returning(Market.id))
 
 
 def discover(http: HttpClient, now: dt.datetime) -> tuple[int, int]:
@@ -266,14 +277,7 @@ def discover(http: HttpClient, now: dt.datetime) -> tuple[int, int]:
                 aid = r.team(sport_id, away["key"], away["name"], away.get("alias"), country, GENDER.get(code, "m"))
                 mid = r.match(e, sport_id, league_id, hid, aid, start)
                 for mk in markets_of(e, home, away, sport == "football"):
-                    line = Decimal(str(mk["line"])) if mk["line"] is not None else None
-                    s.execute(pg_insert(Market).values(match_id=mid, kind=mk["kind"], period=0, line=line,
-                                                       extra={"tokens": mk["tokens"], "conditions": mk["conditions"],
-                                                              "event": str(e["id"])})
-                              .on_conflict_do_update(constraint="markets_match_id_kind_period_line_key",
-                                                     set_={"extra": {"tokens": mk["tokens"],
-                                                                     "conditions": mk["conditions"],
-                                                                     "event": str(e["id"])}}))
+                    upsert_market(s, mid, mk, e["id"])
                     n_markets += 1
             n_events += len(events)
     return n_events, n_markets
@@ -284,7 +288,7 @@ def closed_events(http: HttpClient, series: str, now: dt.datetime, days: int) ->
     large offsets)."""
     out, seen = [], set()
     lo_game = now - dt.timedelta(days=days)
-    lo = lo_game - dt.timedelta(days=14)  # markets open some days before the game
+    lo = lo_game - dt.timedelta(days=45)  # markets open up to a month before the game (NHL)
     while lo < now:
         hi = lo + dt.timedelta(days=7)
         offset = 0

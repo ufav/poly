@@ -37,6 +37,9 @@ JOBS = [
         timeout_min=60),
     # Polymarket match markets of the target series + order book snapshots (the venue's price history)
     Job("polymarket_prices", ["data_engine.providers.polymarket_prices"], every_min=10, timeout_min=9),
+    # minute price series of the games that ended (the venue's history: no bid / ask, all lines and in play)
+    Job("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "3"], at=dt.time(5, 0),
+        timeout_min=120),
 ]
 
 
