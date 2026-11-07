@@ -15,6 +15,7 @@ services:
       POSTGRES_USER: sa
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     command: ["postgres", "-c", "shared_buffers=512MB", "-c", "work_mem=32MB", "-c", "maintenance_work_mem=256MB"]
+    shm_size: 1gb   # parallel queries use /dev/shm; Docker's default 64 MB fails big joins ("No space left on device")
     volumes:
       # data on the host, outside the project and docker volumes: survives container removal / rebuild / down -v
       - ${PGDATA_DIR:-/srv/sports/pgdata}:/var/lib/postgresql/data
