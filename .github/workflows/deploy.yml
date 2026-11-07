@@ -36,6 +36,8 @@ jobs:
           script: |
             set -e
             cd ~/polymarket
+            echo "deploy as $(whoami) in $PWD"
+            grep -q '^POSTGRES_PASSWORD=' .env || { echo "POSTGRES_PASSWORD missing in $PWD/.env"; exit 1; }
             git pull --ff-only
             docker compose up -d --build --remove-orphans  # postgres + worker
             docker image prune -f --filter label=app=sports-platform
