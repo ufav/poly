@@ -134,8 +134,11 @@ def stat_rows(match_id: int, home: dict, away: dict) -> list[dict]:
 
 
 class Refs:
-    def __init__(self, s, sport_id: int, gender: str) -> None:
+    """ESPN team ids are per league (1 = Atlanta Hawks in the NBA, Boston Bruins in the NHL): key 'nba|1'."""
+
+    def __init__(self, s, sport_id: int, gender: str, code: str) -> None:
         self.s = s
+        self.code = code
         self.sport_id = sport_id
         self.own = {e: i for e, i in s.execute(select(SourceEntity.external_id, SourceEntity.entity_id).where(
             SourceEntity.source_id == SOURCE, SourceEntity.entity_type == "team"))}
@@ -151,15 +154,18 @@ class Refs:
             self.by_name[norm_name(name)].append((tid, n.get(tid, 0)))
         self.gender = gender
 
+    def key(self, team: dict) -> str:
+        return f"{self.code}|{team['id']}"
+
     def map(self, team: dict, tid: int, method: str) -> int:
-        self.s.add(SourceEntity(source_id=SOURCE, entity_type="team", external_id=str(team["id"]),
+        self.s.add(SourceEntity(source_id=SOURCE, entity_type="team", external_id=self.key(team),
                                 external_name=team["name"], entity_id=tid, method=method))
-        self.own[str(team["id"])] = tid
+        self.own[self.key(team)] = tid
         return tid
 
     def team(self, team: dict, country: str | None) -> int:
-        if str(team["id"]) in self.own:
-            return self.own[str(team["id"])]
+        if self.key(team) in self.own:
+            return self.own[self.key(team)]
         for n in (team["name"], team.get("short"), team.get("location")):
             cands = {}
             for tid, cnt in self.by_name.get(norm_name(n), []):
@@ -214,7 +220,7 @@ def normalize(code: str, keys: list[str]) -> dict:
     _, sport_id, (country, _), gender = LEAGUES[code]
     cnt = defaultdict(int)
     with session() as s:
-        refs = Refs(s, sport_id, gender)
+        refs = Refs(s, sport_id, gender, code)
         lid = league_id(s, code)
         done = set(s.scalars(select(SourceEntity.external_id).where(SourceEntity.source_id == SOURCE,
                                                                     SourceEntity.entity_type == "match")))
@@ -248,7 +254,7 @@ def normalize(code: str, keys: list[str]) -> dict:
                 home = next((t for t in e["teams"] if t["side"] == "home"), e["teams"][0])
                 away = next(t for t in e["teams"] if t is not home)
                 near = [r for d in (-1, 0, 1) for r in by_day.get(start.date() + dt.timedelta(days=d), [])]
-                hid, aid = refs.own.get(str(home["id"])), refs.own.get(str(away["id"]))
+                hid, aid = refs.own.get(refs.key(home)), refs.own.get(refs.key(away))
                 hit = None
                 if hid and aid:
                     hit = next((r for r in near if (r[1], r[2]) == (hid, aid)), None)

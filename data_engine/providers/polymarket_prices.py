@@ -263,7 +263,8 @@ def markets_of(e: dict, home: dict, away: dict, football: bool, closed: bool = F
     """Market rows {kind, line, tokens {outcome: token}, conditions [...]} of one event; closed markets only with
     closed=True (price history of past games)."""
     out = []
-    ml = [m for m in e["markets"] if (m.get("sportsMarketType") == "moneyline" or (football and old_1x2_leg(m)))
+    markets = [m for m in e["markets"] if m.get("clobTokenIds") and m.get("outcomes")]  # never listed: no tokens
+    ml = [m for m in markets if (m.get("sportsMarketType") == "moneyline" or (football and old_1x2_leg(m)))
           and (closed or not m.get("closed"))]
     if football and len(ml) == 3:
         tokens = {}
@@ -275,7 +276,7 @@ def markets_of(e: dict, home: dict, away: dict, football: bool, closed: bool = F
                 tokens[side] = yes
         if len(tokens) == 3:
             out.append({"kind": "1x2", "line": None, "tokens": tokens, "conditions": [m["conditionId"] for m in ml]})
-    for m in e["markets"]:
+    for m in markets:
         t = m.get("sportsMarketType")
         if (m.get("closed") and not closed) or t not in KINDS or (t == "moneyline" and football):
             continue
