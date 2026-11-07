@@ -29,7 +29,8 @@ PM = 4
 SPORTS = (1, 2, 3, 5)
 WINDOW = dt.timedelta(hours=36)
 GENERIC = {"united", "city", "real", "sporting", "athletic", "club", "saint", "santa", "san", "los", "las", "del",
-           "new", "north", "south", "east", "west", "royal", "union", "young", "boys", "women", "reserves"}
+           "new", "north", "south", "east", "west", "royal", "union", "young", "boys", "women", "reserves",
+           "amateur", "amateurs", "youth", "academy", "juniors", "junior", "team", "stars"}
 
 
 ALIASES = {"czechia": "czech republic", "turkiye": "turkey", "korea republic": "south korea",
