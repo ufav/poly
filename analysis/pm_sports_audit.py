@@ -20,51 +20,44 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pmbot.http import HttpClient  # noqa: E402
 from pmbot.polymarket import GAMMA  # noqa: E402
 
-# Gamma sport code -> our sport (by code / name keywords; unknown -> other)
-FOOTBALL = ("epl", "lal", "bun", "sea", "fl1", "ucl", "uel", "ucol", "mls", "ere", "por", "tur", "spl", "bra",
-            "arg", "mex", "jap", "kor", "chi", "aus", "efl", "elc", "fac", "cdr", "dfb", "itc", "cof", "lib", "sud",
-            "soccer", "fifwc", "uef", "conmebol", "concacaf", "afc", "caf", "nwsl", "wsl", "rus", "den", "nor", "swe",
-            "sco", "bel", "gre", "aut", "sui", "pol", "rou", "ukr", "cze", "cro", "srb", "isr", "ksa", "uae", "qat",
-            "egy", "mar", "ind", "col", "per", "uru", "ecu", "par", "chl", "bol", "ven", "usl", "can", "cpl")
-KEYWORDS = [
-    ("tennis", ("atp", "wta", "itf", "tennis", "challenger", "wimbledon", "us open", "roland", "australian open")),
-    ("basketball", ("nba", "wnba", "ncaab", "cbb", "basket", "euroleague", "acb", "nbl", "cba", "bbl", "kbl",
-                    "fiba", "eurocup", "vtb")),
-    ("hockey", ("nhl", "khl", "hockey", "shl", "liiga", "del", "ahl", "nla", "iihf")),
-    ("volleyball", ("volley",)),
-    ("football", ("soccer", "football club", "premier league", "la liga", "serie a", "bundesliga", "ligue 1",
-                  "champions league", "europa league", "conference league", "mls", "eredivisie", "liga", "copa",
-                  "cup", "fifa", "uefa", "world cup")),
-]
-NOT_OURS = ("nfl", "ncaaf", "cfb", "mlb", "kbo", "npb", "ufc", "mma", "boxing", "f1", "nascar", "golf", "pga",
-            "cricket", "ipl", "lol", "cs2", "dota", "valorant", "rugby", "afl", "darts", "snooker", "ufl", "esports")
+# Gamma tag -> our sport (tags of /sports entries); names below only for series without a sport tag (EuroLeague)
+TAGS = {"100350": "football", "864": "tennis", "28": "basketball", "745": "basketball", "100088": "hockey",
+        "899": "hockey", "102883": "volleyball"}
+NAMES = [("basketball", ("euroleague", "eurocup", "basketball", "liga acb", "nbl", "cba", "kbl", "fiba")),
+         ("hockey", ("khl", "shl", "liiga", "ahl", "del", "hockey")), ("volleyball", ("volley",))]
 
 
-def our_sport(code: str, name: str) -> str:
-    c, n = code.lower(), name.lower()
-    if any(k == c or c.startswith(k) for k in NOT_OURS) or any(k in n for k in ("nfl", "mlb", "ufc", "cricket",
-                                                                               "league of legends", "counter")):
-        return "other"
-    for sport, words in KEYWORDS:
-        if any(w in c or w in n for w in words):
+def our_sport(tags: str, name: str) -> str:
+    for t in str(tags or "").split(","):
+        if t.strip() in TAGS:
+            return TAGS[t.strip()]
+    n = name.lower()
+    for sport, words in NAMES:
+        if any(w in n for w in words) and "cricket" not in n and "big bash" not in n:
             return sport
-    if c in FOOTBALL or c[:3] in FOOTBALL:
-        return "football"
     return "other"
 
 
 def events_of(http: HttpClient, series: str, since: dt.datetime) -> list[dict]:
-    out = []
-    for closed in ("true", "false"):
-        offset = 0
-        while True:
-            page = http.get_json(f"{GAMMA}/events", {"series_id": series, "closed": closed, "limit": 100,
-                                                     "offset": offset,
-                                                     "start_date_min": since.strftime("%Y-%m-%dT%H:%M:%SZ")})
-            out += page
-            if len(page) < 100:
-                break
-            offset += 100
+    """Events of a series that start after `since`, week by week (Gamma refuses large offsets: 422)."""
+    out, seen = [], set()
+    now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=14)
+    lo = since
+    while lo < now:
+        hi = lo + dt.timedelta(days=7)
+        for closed in ("true", "false"):
+            offset = 0
+            while True:
+                page = http.get_json(f"{GAMMA}/events", {
+                    "series_id": series, "closed": closed, "limit": 100, "offset": offset,
+                    "start_date_min": lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "start_date_max": hi.strftime("%Y-%m-%dT%H:%M:%SZ")})
+                out += [e for e in page if e["id"] not in seen]
+                seen.update(e["id"] for e in page)
+                if len(page) < 100 or offset >= 1900:
+                    break
+                offset += 100
+        lo = hi
     return out
 
 
@@ -81,7 +74,9 @@ def main() -> None:
         series = str(lg.get("series") or "").split(",")[0].strip()
         if not series:
             continue
-        sport = our_sport(lg.get("sport") or "", lg.get("name") or "")
+        sport = our_sport(lg.get("tags"), lg.get("name") or "")
+        if sport == "other":  # NFL, MLB, cricket, esports ...: not our sports
+            continue
         try:
             evs = events_of(http, series, since)
         except Exception as e:  # one bad series must not stop the audit

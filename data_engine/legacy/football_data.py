@@ -36,7 +36,8 @@ EXTRA_COUNTRY = {"ARG": "Argentina", "AUT": "Austria", "BRA": "Brazil", "CHN": "
                  "FIN": "Finland", "IRL": "Ireland", "JPN": "Japan", "MEX": "Mexico", "NOR": "Norway", "POL": "Poland",
                  "ROU": "Romania", "RUS": "Russia", "SWE": "Sweden", "SWZ": "Switzerland", "USA": "USA"}
 AUTUMN_SPRING_EXTRA = {"AUT", "DNK", "POL", "ROU", "RUS", "SWZ"}
-BROKEN_FILES = {("SP2", 1993), ("SP2", 1994), ("SP2", 1995)}  # copies of the La Liga file at the source
+# copies of the La Liga file at the source (same fixtures and scores)
+BROKEN_FILES = {("SP2", 1993), ("SP2", 1994), ("SP2", 1995), ("P1", 1993), ("SC1", 1993)}
 OLD_BOOKS = ("B365", "BW", "IW", "LB", "PS", "WH", "VC", "GB", "SB", "SJ", "BS", "SO", "SY")
 
 # (bookmaker, snapshot, {outcome: [file columns, first present wins]})

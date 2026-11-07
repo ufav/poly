@@ -23,14 +23,17 @@ RETRY_MIN = 30
 @dataclass
 class Job:
     name: str
-    args: list[str]            # python -m <args>
-    at: dt.time                # daily start time (UTC)
+    args: list[str]                  # python -m <args>
+    at: dt.time | None = None        # daily start time (UTC), or
+    every_min: int | None = None     # a run every N minutes
     timeout_min: int = 120
 
 
 JOBS = [
     # results of the last days of 5 sports + any day missing in the ~14 months the site keeps scores for
-    Job("olimpbet_daily", ["data_engine.providers.olimpbet_results", "--daily"], dt.time(2, 0), timeout_min=240),
+    Job("olimpbet_daily", ["data_engine.providers.olimpbet_results", "--daily"], at=dt.time(2, 0), timeout_min=240),
+    # Polymarket match markets of the target series + order book snapshots (the venue's price history)
+    Job("polymarket_prices", ["data_engine.providers.polymarket_prices"], every_min=10, timeout_min=9),
 ]
 
 
@@ -48,6 +51,8 @@ def run(job: Job) -> bool:
 
 
 def next_run(job: Job, now: dt.datetime) -> dt.datetime:
+    if job.every_min:
+        return now + dt.timedelta(minutes=job.every_min)
     at = dt.datetime.combine(now.date(), job.at, tzinfo=dt.timezone.utc)
     return at if at > now else at + dt.timedelta(days=1)
 
@@ -68,7 +73,7 @@ def main() -> None:
         job = next(j for j in JOBS if j.name == args.once)
         sys.exit(0 if run(job) else 1)
     now = dt.datetime.now(dt.timezone.utc)
-    due = {j.name: next_run(j, now) for j in JOBS}
+    due = {j.name: now if j.every_min else next_run(j, now) for j in JOBS}
     log.info("jobs: %s", {n: t.isoformat() for n, t in due.items()})
     while True:
         now = dt.datetime.now(dt.timezone.utc)
