@@ -211,11 +211,60 @@ def side_of(name: str, home: dict, away: dict) -> str | None:
     return None
 
 
+OLD_1X2 = re.compile(r"^Will .+ (win on \d{4}-\d{2}-\d{2}|end in a draw)\?$")
+GENERIC_TAGS = {"1", "100639", "100350", "864"}
+
+
+def old_1x2_leg(m: dict) -> bool:
+    """A leg of the football 1x2 of the 2024/25 format: untyped 'Will X win on DATE?' / 'Will X vs. Y end in a draw?'."""
+    return not m.get("sportsMarketType") and bool(OLD_1X2.match(m.get("question") or ""))
+
+
+def league_tags(http: HttpClient) -> dict[str, list[str]]:
+    """Series code -> its league tag ids (the /sports tags without the generic ones), for events outside series."""
+    return {x["sport"]: [t.strip() for t in str(x.get("tags") or "").split(",") if t.strip() not in GENERIC_TAGS]
+            for x in http.get_json(f"{GAMMA}/sports") if x.get("sport") in SERIES}
+
+
+def tag_event_weeks(http: HttpClient, tag: str, now: dt.datetime, days: int, football: bool):
+    """Closed main game events carrying a league tag, week by week (the seasons before the current series)."""
+    seen = set()
+    lo_game = now - dt.timedelta(days=days)
+    lo = lo_game - dt.timedelta(days=45)
+    while lo < now:
+        hi = lo + dt.timedelta(days=7)
+        week, offset = [], 0
+        while True:
+            page = http.get_json(f"{GAMMA}/events", {
+                "tag_id": tag, "closed": "true", "limit": 100, "offset": offset,
+                "start_date_min": lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "start_date_max": hi.strftime("%Y-%m-%dT%H:%M:%SZ")})
+            for e in page:
+                if e["id"] in seen or e.get("parentEventId") or " vs" not in (e.get("title") or ""):
+                    continue
+                seen.add(e["id"])
+                try:
+                    if not (lo_game <= kickoff(e) <= now):
+                        continue
+                except (KeyError, ValueError):
+                    continue
+                e["markets"] = [m for m in e.get("markets") or []
+                                if m.get("sportsMarketType") in KINDS or (football and old_1x2_leg(m))]
+                if any(m.get("sportsMarketType") == "moneyline" or old_1x2_leg(m) for m in e["markets"]):
+                    week.append(e)
+            if len(page) < 100 or offset >= 1900:
+                break
+            offset += 100
+        yield week
+        lo = hi
+
+
 def markets_of(e: dict, home: dict, away: dict, football: bool, closed: bool = False) -> list[dict]:
     """Market rows {kind, line, tokens {outcome: token}, conditions [...]} of one event; closed markets only with
     closed=True (price history of past games)."""
     out = []
-    ml = [m for m in e["markets"] if m.get("sportsMarketType") == "moneyline" and (closed or not m.get("closed"))]
+    ml = [m for m in e["markets"] if (m.get("sportsMarketType") == "moneyline" or (football and old_1x2_leg(m)))
+          and (closed or not m.get("closed"))]
     if football and len(ml) == 3:
         tokens = {}
         for m in ml:

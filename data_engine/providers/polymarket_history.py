@@ -25,7 +25,7 @@ from sqlalchemy import insert, text
 
 from core.db import session
 from core.models import OddsQuote
-from data_engine.providers.polymarket_prices import (GENDER, SERIES, SOURCE, SPORT_ID, Resolver, closed_event_weeks, kickoff,
+from data_engine.providers.polymarket_prices import (GENDER, SERIES, SOURCE, SPORT_ID, Resolver, closed_event_weeks, kickoff, league_tags, tag_event_weeks,
                                                      markets_of, series_ids, sides, upsert_market)
 from pmbot.http import HttpClient
 from pmbot.polymarket import CLOB
@@ -100,12 +100,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=60)
     ap.add_argument("--series", help="comma list of series codes (default: all of polymarket_prices.SERIES)")
+    ap.add_argument("--by-tag", action="store_true",
+                    help="find events by the league tag instead of the series: the seasons before the current "
+                         "series (2024/25: NHL without a series, the football 1x2 of three untyped markets)")
     args = ap.parse_args()
     now = dt.datetime.now(dt.timezone.utc)
     http = HttpClient(min_interval=0.25)
     clob = Clob()
     pool = ThreadPoolExecutor(WORKERS)
     ids = series_ids(http)
+    tags = league_tags(http) if args.by_tag else {}
     codes = [c.strip() for c in args.series.split(",")] if args.series else list(ids)
     with session() as s:
         done = done_events(s)
@@ -125,7 +129,12 @@ def main() -> None:
 
         n_code = 0
         # games over (kickoff + 6 h in the past), so the in-play window is complete
-        for week in closed_event_weeks(http, ids[code], now - dt.timedelta(hours=6), args.days):
+        cut = now - dt.timedelta(hours=6)
+        if args.by_tag:
+            weeks = (w for tag in tags.get(code, []) for w in tag_event_weeks(http, tag, cut, args.days, football))
+        else:
+            weeks = closed_event_weeks(http, ids[code], cut, args.days)
+        for week in weeks:
             events = sorted((e for e in week if str(e["id"]) not in done), key=kickoff)
             for e, (home, away, mks, got) in zip(events, pool.map(fetch_event, events)):
                 ko = kickoff(e)

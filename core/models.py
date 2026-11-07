@@ -221,4 +221,5 @@ SOURCES = [  # (id, code, name, kind, trust)
     (5, "tennis_data", "tennis-data.co.uk", "results", 2), (6, "sackmann", "Jeff Sackmann tennis_atp / tennis_wta",
                                                             "stats", 2),
     (7, "nhl", "NHL API", "results", 1), (8, "the_odds_api", "The Odds API", "odds", 2),
+    (9, "espn", "ESPN site API (scoreboard / summary)", "results", 2),
 ]
