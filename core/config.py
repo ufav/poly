@@ -17,8 +17,12 @@ class Settings(BaseSettings):
     data_dir: Path = ROOT / "data"
     # AI Engine (docs/md1.md 7): web search for the news of the shortlisted matches, LLM through OpenRouter
     tavily_api_key: str = ""
+    # any OpenAI-compatible chat API: Groq by default (GROQ_API_KEY), OpenRouter when OPENROUTER_API_KEY is set
+    # and LLM_BASE_URL points to it
+    groq_api_key: str = ""
     openrouter_api_key: str = ""
-    openrouter_model: str = "deepseek/deepseek-chat"
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_model: str = "openai/gpt-oss-120b"
 
 
 @lru_cache
