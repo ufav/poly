@@ -10,6 +10,10 @@ COPY scripts scripts
 COPY core core
 COPY data_engine data_engine
 COPY workers workers
+COPY ml_engine ml_engine
+COPY ai_engine ai_engine
+COPY decision_engine decision_engine
+COPY backtesting backtesting
 COPY migrations migrations
 COPY alembic.ini .
 

@@ -58,15 +58,17 @@ def level_of(league: str, extra: dict | None) -> str:
     return "other"
 
 
-def load_matches(conn, since: dt.datetime) -> pd.DataFrame:
+def load_matches(conn, since: dt.datetime, upcoming: list[int] | None = None) -> pd.DataFrame:
+    """Finished singles since `since` (+ the `upcoming` match ids, scheduled: features only, no rating update)."""
     m = pd.read_sql(text("""
         SELECT m.id, m.start_time, m.home_team_id h, m.away_team_id a, m.home_score hs, m.away_score aws,
                m.periods, m.result_extra, m.status, l.name league, l.gender
         FROM matches m JOIN leagues l ON l.id = m.league_id
         JOIN teams th ON th.id = m.home_team_id JOIN teams ta ON ta.id = m.away_team_id
-        WHERE m.sport_id = 2 AND m.start_time >= :since AND m.status IN ('finished', 'walkover')
+        WHERE m.sport_id = 2 AND m.start_time >= :since
+          AND (m.status IN ('finished', 'walkover') OR m.id = ANY(:upcoming))
           AND th.kind = 'player' AND ta.kind = 'player' AND l.name !~* 'doubles|mixed'"""), conn,
-        params={"since": since})
+        params={"since": since, "upcoming": list(upcoming or [])})
     ranks = pd.read_sql(text("""
         SELECT st.match_id, st.stat, st.home_value, st.away_value FROM match_statistics st
         JOIN matches m ON m.id = st.match_id
@@ -150,6 +152,8 @@ def build(m: pd.DataFrame) -> pd.DataFrame:
         for side, p in (("h", h), ("a", a)):
             if not math.isnan(getattr(t, f"{side}_rank")):
                 rank[p] = (getattr(t, f"{side}_rank"), getattr(t, f"{side}_rank_points"))
+        if t.status not in ("finished", "walkover"):  # upcoming: no result to learn from
+            continue
         if t.status == "walkover":
             continue
         hist[h].append((ts, t.games))

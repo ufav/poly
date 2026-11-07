@@ -20,7 +20,9 @@ SYSTEM = """You are a sports news analyst for a betting model. You get articles 
 upcoming match. Extract ONLY facts that are written in these articles and matter for this match: injuries,
 suspensions, expected lineup / rotation / rested players, coach changes, motivation (title race, relegation,
 nothing to play for, cup priority), conflicts, fatigue / travel, weather, withdrawals (tennis).
-Rules: never invent facts; never estimate win probabilities or odds; if articles contradict each other, say so in
+Rules: never invent facts; list only actual problems or changes (an absence, an injury, a doubt, a rest) - never
+"no injury", "not on the injury list", "fully fit" as a fact (put such reassurance in "summary"); never estimate win
+probabilities or odds; if articles contradict each other, say so in
 "uncertainties"; a rumour or social-media claim is not confirmed; ignore articles about other matches or old seasons.
 Answer one JSON object:
 {"facts": [{"category": "injury|suspension|lineup|rotation|coach|motivation|conflict|fatigue|weather|withdrawal|other",

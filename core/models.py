@@ -213,6 +213,46 @@ class OddsQuote(Base):
     status: Mapped[str | None] = mapped_column(String(16))       # open / suspended / closed
 
 
+# ---------- predictions and paper bets ----------
+
+class Prediction(Base):
+    """A probability of one outcome of one market made before the match (append-only: a new version when the
+    probability or the price moved; never updated). approach: A model / B form / C combined / D external analyst."""
+    __tablename__ = "predictions"
+    __table_args__ = (Index("predictions_match", "match_id", "created_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id", ondelete="CASCADE"))
+    market_id: Mapped[int | None] = mapped_column(ForeignKey("markets.id", ondelete="CASCADE"))
+    outcome: Mapped[str] = mapped_column(String(16))
+    approach: Mapped[str] = mapped_column(String(8))
+    model: Mapped[str] = mapped_column(String(32))               # tennis_cb_v1 / tennis_form_v1 / analyst ...
+    p: Mapped[Decimal] = mapped_column(Numeric(6, 5))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(7, 5))  # the buy price (ask) at the time
+    odds: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    ev: Mapped[Decimal | None] = mapped_column(Numeric(7, 4))
+    news: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+
+
+class PaperBet(Base):
+    """A recommendation as a paper bet: a single or a 2-leg parlay, flat stake, settled from the results."""
+    __tablename__ = "paper_bets"
+    __table_args__ = (Index("paper_bets_status", "status", "created_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    kind: Mapped[str] = mapped_column(String(16))                # value_single / fav_parlay / fav_single
+    approach: Mapped[str] = mapped_column(String(8))
+    legs: Mapped[list[Any]] = mapped_column(JSONB(none_as_null=True))  # [{prediction_id, match_id, outcome, odds, p}]
+    odds: Mapped[Decimal] = mapped_column(Numeric(8, 3))
+    p: Mapped[Decimal] = mapped_column(Numeric(6, 5))            # (joint) probability by the approach
+    stake: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    status: Mapped[str] = mapped_column(String(8), default="open")  # open / won / lost / void
+    settled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    pnl: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 # ---------- mapping ----------
 
 class SourceEntity(Base):

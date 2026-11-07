@@ -8,7 +8,8 @@ Every source is incremental, so an hour without news costs a few requests:
   - football-data files by ETag (304 when the site did not update);
   - tennis-data only when the download page's 'Updated' date changed;
   - Polymarket price history of the games that ended in the last 2 days;
-  - Polymarket matches / teams linked to the results, duplicates of the last week merged.
+  - Polymarket matches / teams linked to the results, duplicates of the last week merged;
+  - the paper bot (decision_engine/paper_bot.py): settle, predict, news check, bets, Telegram.
 
   python -m workers.pipeline
 """
@@ -36,6 +37,8 @@ def steps() -> list[tuple[str, list[str], int]]:
         ("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "2"], 20),
         ("polymarket_links", ["data_engine.normalization.polymarket_links"], 10),
         ("dedupe", ["data_engine.normalization.dedupe", "--since", week_ago, "--vote-source", "9"], 10),
+        # paper bets: settle, predict the next 24 h (tennis), news check of the shortlist, parlays / singles, Telegram
+        ("paper_bot", ["decision_engine.paper_bot"], 30),
     ]
 
 
