@@ -1,9 +1,10 @@
-"""Walk-forward check of the NBA model (ml_engine/basketball/features.py): A = CatBoost on all the features, B =
+"""Walk-forward check of the NBA / NHL models (ml_engine/basketball/features.py, ml_engine/hockey/features.py): A = CatBoost on all the features, B =
 logistic on Elo / net rating / absences / rest, refit every month from --since on the games before (the first
 months of 2024/25 only warm the ratings up); vs the Polymarket moneyline before tip-off: log loss, the market blend
 weight, favourite calibration, confident favourites and value singles at the price + 1 c.
 
   python -m backtesting.nba_cb [--since 2025-10-01] [--league NBA]
+  python -m backtesting.nba_cb --sport hockey      # NHL: Elo, shots, special teams, the starting goalie, absences
 """
 
 from __future__ import annotations
@@ -23,9 +24,12 @@ from sklearn.preprocessing import StandardScaler
 from backtesting.tennis_cb import blend, brier, ll, market_probs
 from core.db import engine
 from ml_engine.basketball import features as ft
+from ml_engine.hockey import features as hf
 
 OUT = Path(__file__).resolve().parents[1] / "data" / "nba_cb_predictions.csv"
 B_COLS = ["elo_diff", "d_net", "d_miss_share", "d_miss_top", "h_b2b", "a_b2b", "d_rest", "d_last10"]
+B_COLS_NHL = ["elo_diff", "d_shot_share", "d_g_sv", "h_g_usual", "a_g_usual", "d_miss_share", "h_b2b", "a_b2b",
+              "d_pp", "d_pk"]
 
 
 def main() -> None:
@@ -34,10 +38,17 @@ def main() -> None:
     ap.add_argument("--since", default="2025-10-01")
     ap.add_argument("--train-from", default="2025-01-01")
     ap.add_argument("--league", default="NBA")
+    ap.add_argument("--sport", default="basketball", choices=("basketball", "hockey"))
     args = ap.parse_args()
+    global B_COLS, OUT
+    since = dt.datetime(2024, 10, 1, tzinfo=dt.timezone.utc)
     with engine().connect() as c:
-        m = ft.load(c, dt.datetime(2024, 10, 1, tzinfo=dt.timezone.utc), args.league)
-    feats = ft.build(m)
+        if args.sport == "hockey":
+            m = hf.load(c, since)
+            B_COLS, OUT = B_COLS_NHL, OUT.with_name("nhl_cb_predictions.csv")
+        else:
+            m = ft.load(c, since, args.league)
+    feats = hf.build(m) if args.sport == "hockey" else ft.build(m)
     d = m[["id", "start_time", "hs", "aws"]].rename(columns={"id": "match_id"}).merge(feats, on="match_id")
     d = d[(d.start_time >= pd.Timestamp(args.train_from, tz="UTC")) & (d.hs != d.aws)].reset_index(drop=True)
     d["y"] = (d.hs > d.aws).astype(int)
