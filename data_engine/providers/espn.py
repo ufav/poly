@@ -93,14 +93,14 @@ def players_of(summary: dict) -> dict[str, list[dict]]:
                      "pos": (p.get("position") or {}).get("abbreviation"), "starter": bool(p.get("starter")),
                      "sub_in": bool(p.get("subbedIn")), "sub_out": bool(p.get("subbedOut")),
                      "stats": {x["name"]: x.get("value") for x in p.get("stats") or [] if x.get("name")}}
-                    for p in r.get("roster") or [] if p.get("athlete")]
+                    for p in r.get("roster") or [] if (p.get("athlete") or {}).get("id")]
     for t in (summary.get("boxscore") or {}).get("players") or []:
         tid = str((t.get("team") or {}).get("id"))
         rows = []
         for block in t.get("statistics") or []:
             names = block.get("names") or block.get("labels") or []
             for a in block.get("athletes") or []:
-                if not a.get("athlete"):
+                if not (a.get("athlete") or {}).get("id"):  # team rows / placeholders without an athlete id
                     continue
                 rows.append({"id": str(a["athlete"]["id"]), "name": a["athlete"].get("displayName"),
                              "pos": ((a["athlete"].get("position") or {}).get("abbreviation")),
@@ -122,7 +122,8 @@ def events_of(summary: dict) -> list[dict]:
         minute = re.match(r"(\d+)", (e.get("clock") or {}).get("displayValue") or "")
         out.append({"type": kind, "minute": int(minute[1]) if minute else None,
                     "team": str((e.get("team") or {}).get("id")) if e.get("team") else None,
-                    "players": [str(p["athlete"]["id"]) for p in e.get("participants") or [] if p.get("athlete")]})
+                    "players": [str(p["athlete"]["id"]) for p in e.get("participants") or []
+                                if (p.get("athlete") or {}).get("id")]})
     return out
 
 
@@ -131,7 +132,14 @@ def summary_of(http: HttpClient, path: str, event_id: str) -> dict:
         s = http.get_json(f"{API}/{path}/summary", {"event": event_id})
     except Exception:  # summary missing: the result is still useful
         return {"stats": {}, "players": {}, "events": []}
-    return {"stats": box(s), "players": players_of(s), "events": events_of(s)}
+    out = {}
+    for key, parse in (("stats", box), ("players", players_of), ("events", events_of)):
+        try:
+            out[key] = parse(s)
+        except Exception as e:  # one odd summary must not stop a backfill; the other parts are kept
+            print(f"  summary {event_id}: {key} not parsed ({e!r:.80})", flush=True)
+            out[key] = [] if key == "events" else {}
+    return out
 
 
 def team_name(name: str | None) -> str | None:
