@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 
+from workers import alerts
+
 log = logging.getLogger("pipeline")
 
 
@@ -55,6 +57,7 @@ def main() -> int:
             ok = False
             log.error("%s killed after %d min", name, timeout)
         log.info("%s %s in %.1f min", name, "done" if ok else "FAILED", (time.time() - t0) / 60)
+        alerts.track(f"шаг {name}", ok)
         if not ok:
             failed.append(name)
     log.info("pipeline %s in %.1f min", f"failed steps: {failed}" if failed else "ok", (time.time() - t_all) / 60)

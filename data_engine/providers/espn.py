@@ -127,13 +127,33 @@ def events_of(summary: dict) -> list[dict]:
     return out
 
 
+def leaders_of(summary: dict) -> dict[str, dict]:
+    """Football 'match leaders' (from the 2026/27 season): per team the top shooter's xG and the goalkeeper's xG
+    conceded (= the opponent's xG of the match; the keeper is listed only when he made a save)."""
+    out: dict[str, dict] = {}
+    for t in summary.get("leaders") or []:
+        tid = str((t.get("team") or {}).get("id"))
+        row = {}
+        for cat in t.get("leaders") or []:
+            for ld in cat.get("leaders") or []:
+                st = {x.get("name"): x.get("value") for x in ld.get("statistics") or []}
+                if cat.get("name") == "totalShots" and st.get("expectedGoals") is not None:
+                    row["xg_top_shooter"] = st["expectedGoals"]
+                if cat.get("name") == "saves" and st.get("expectedGoalsConceded") is not None:
+                    row["xgc_keeper"] = st["expectedGoalsConceded"]
+                if cat.get("name") == "accuratePasses" and st.get("bigChanceCreated") is not None:
+                    row["big_chances_top_passer"] = st["bigChanceCreated"]
+        out[tid] = row
+    return out
+
+
 def summary_of(http: HttpClient, path: str, event_id: str) -> dict:
     try:
         s = http.get_json(f"{API}/{path}/summary", {"event": event_id})
     except Exception:  # summary missing: the result is still useful
-        return {"stats": {}, "players": {}, "events": []}
+        return {"stats": {}, "players": {}, "events": [], "leaders": {}}
     out = {}
-    for key, parse in (("stats", box), ("players", players_of), ("events", events_of)):
+    for key, parse in (("stats", box), ("players", players_of), ("events", events_of), ("leaders", leaders_of)):
         try:
             out[key] = parse(s)
         except Exception as e:  # one odd summary must not stop a backfill; the other parts are kept
@@ -160,7 +180,9 @@ def compact(e: dict, detail: dict) -> dict:
                        "winner": t.get("winner"), "shootout": t.get("shootoutScore"),
                        "periods": [x.get("value") for x in t.get("linescores") or []],
                        "stats": stats.get(str(t["team"]["id"])),
-                       "players": players.get(str(t["team"]["id"]))} for t in c["competitors"]],
+                       "players": players.get(str(t["team"]["id"])),
+                       "leaders": (detail.get("leaders") or {}).get(str(t["team"]["id"]))}
+                      for t in c["competitors"]],
             "events": detail.get("events") or []}
 
 
@@ -202,7 +224,8 @@ def update_days(http: HttpClient, code: str, days: list[dt.date]) -> list[str]:
                     "events") or []:
                 prev = events.get(e["id"])
                 completed = e["competitions"][0]["status"]["type"].get("completed")
-                if prev and prev["completed"] and any(t.get("players") for t in prev["teams"]):
+                if prev and prev["completed"] and any(t.get("players") for t in prev["teams"]) and \
+                        (not path.startswith("soccer") or "leaders" in prev["teams"][0]):
                     continue  # finished and complete already
                 events[e["id"]] = compact(e, summary_of(http, path, e["id"]) if completed else {})
         with session() as s:
@@ -507,8 +530,54 @@ def normalize_players(code: str, keys: list[str]) -> dict:
     return dict(cnt)
 
 
-def refetch_details(http: HttpClient, code: str, keys: list[str]) -> int:
-    """History stored before lineups were kept: the summary again for every finished game without players."""
+def num_or_none(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_leaders(code: str, keys: list[str]) -> int:
+    """xG of the stored football games -> match_statistics: 'xg' (each side = the xG conceded by the other side's
+    keeper; only when both keepers are listed) and 'xg_top_shooter'."""
+    if not LEAGUES[code][0].startswith("soccer"):
+        return 0
+    n = 0
+    for k in keys:
+        with session() as s:
+            payload = s.scalar(select(RawPayload.payload).where(RawPayload.source_id == SOURCE,
+                                                                RawPayload.kind == "espn_month",
+                                                                RawPayload.external_id == k))
+            events = [e for e in (payload or {}).get("events", []) if any(t.get("leaders") for t in e["teams"])]
+            if not events:
+                continue
+            match_of = dict(s.execute(select(SourceEntity.external_id, SourceEntity.entity_id).where(
+                SourceEntity.source_id == SOURCE, SourceEntity.entity_type == "match",
+                SourceEntity.external_id.in_([e["id"] for e in events]))).all())
+            rows = []
+            for e in events:
+                if e["id"] not in match_of:
+                    continue
+                home = next((t for t in e["teams"] if t["side"] == "home"), e["teams"][0])
+                away = next(t for t in e["teams"] if t is not home)
+                hl, al = home.get("leaders") or {}, away.get("leaders") or {}
+                xh, xa = num_or_none(al.get("xgc_keeper")), num_or_none(hl.get("xgc_keeper"))
+                if xh is not None and xa is not None:
+                    rows.append({"match_id": match_of[e["id"]], "source_id": SOURCE, "stat": "xg", "period": 0,
+                                 "home_value": xh, "away_value": xa})
+                th, ta = num_or_none(hl.get("xg_top_shooter")), num_or_none(al.get("xg_top_shooter"))
+                if th is not None and ta is not None:
+                    rows.append({"match_id": match_of[e["id"]], "source_id": SOURCE, "stat": "xg_top_shooter",
+                                 "period": 0, "home_value": th, "away_value": ta})
+            if rows:
+                s.execute(pg_insert(MatchStatistic).on_conflict_do_nothing(), rows)
+                n += len(rows)
+    return n
+
+
+def refetch_details(http: HttpClient, code: str, keys: list[str], leaders_since: str | None = None) -> int:
+    """History stored before lineups were kept: the summary again for every finished game without players (and,
+    with leaders_since, for the football games from that date stored before the leaders block / xG was kept)."""
     path = LEAGUES[code][0]
     n = 0
     for k in keys:
@@ -520,12 +589,15 @@ def refetch_details(http: HttpClient, code: str, keys: list[str]) -> int:
             continue
         changed = False
         for e in payload["events"]:
-            if not e["completed"] or any(t.get("players") for t in e["teams"]):
+            need_leaders = bool(leaders_since) and path.startswith("soccer") and e["date"][:10] >= leaders_since \
+                and "leaders" not in e["teams"][0]
+            if not e["completed"] or (any(t.get("players") for t in e["teams"]) and not need_leaders):
                 continue
             d = summary_of(http, path, e["id"])
             for t in e["teams"]:
-                t["players"] = d["players"].get(str(t["id"]))
+                t["players"] = t.get("players") or d["players"].get(str(t["id"]))
                 t["stats"] = t.get("stats") or d["stats"].get(str(t["id"]))
+                t["leaders"] = d["leaders"].get(str(t["id"]))
             e["events"] = d["events"]
             changed, n = True, n + 1
         if changed:
@@ -546,6 +618,8 @@ def main() -> None:
     ap.add_argument("--recent", type=int, metavar="N", help="hourly: only today and the N-1 days before (UTC)")
     ap.add_argument("--details", action="store_true",
                     help="re-fetch the summaries of stored games that have no lineups / player box scores yet")
+    ap.add_argument("--leaders-since", help="with --details: also the football games from this date without the "
+                                            "leaders block (xG; ESPN has it from the 2026/27 season)")
     args = ap.parse_args()
     since = dt.date.fromisoformat(args.since)
     yesterday = dt.date.today() - dt.timedelta(days=1)
@@ -561,7 +635,8 @@ def main() -> None:
                 print(f"{code}: ESPN not reachable ({e!r:.100}), the other leagues wait for the next run", flush=True)
                 failed = True
                 break
-            print(f"{code}: {normalize(code, keys)} players {normalize_players(code, keys)}", flush=True)
+            print(f"{code}: {normalize(code, keys)} players {normalize_players(code, keys)} "
+                  f"xg rows {normalize_leaders(code, keys)}", flush=True)
             continue
         with session() as s:
             have = set(s.scalars(select(RawPayload.external_id).where(RawPayload.source_id == SOURCE,
@@ -583,8 +658,9 @@ def main() -> None:
             print(f"  {key}: {len(events)} games ({sum(1 for e in events if e['completed'])} finished)  "
                   f"{(time.time() - t0) / 60:.1f} min", flush=True)
         if args.details:
-            print(f"{code}: {refetch_details(http, code, keys)} summaries re-fetched", flush=True)
-        print(f"{code}: {normalize(code, keys)} players {normalize_players(code, keys)}", flush=True)
+            print(f"{code}: {refetch_details(http, code, keys, args.leaders_since)} summaries re-fetched", flush=True)
+        print(f"{code}: {normalize(code, keys)} players {normalize_players(code, keys)} "
+              f"xg rows {normalize_leaders(code, keys)}", flush=True)
     print(f"done in {(time.time() - t0) / 60:.1f} min")
     if failed:
         sys.exit(1)

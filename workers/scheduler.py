@@ -17,6 +17,8 @@ import sys
 import time
 from dataclasses import dataclass
 
+from workers import alerts
+
 log = logging.getLogger("worker")
 RETRY_MIN = 30
 
@@ -99,6 +101,8 @@ def main() -> None:
                     continue
                 ok = proc.returncode == 0
                 del running[job.name]
+                if job.name != "pipeline":  # the pipeline alerts per step itself
+                    alerts.track(f"задача {job.name}", ok, threshold=6 if job.every_min and job.every_min < 30 else 3)
                 log.info("%s %s in %.1f min", job.name, "done" if ok else "FAILED", minutes)
                 due[job.name] = next_run(job, now) if ok else now + dt.timedelta(minutes=RETRY_MIN)
                 log.info("next %s at %s", job.name, due[job.name].isoformat())
