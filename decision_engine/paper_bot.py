@@ -15,6 +15,9 @@ workers/pipeline.py):
   python -m decision_engine.paper_bot              # one cycle
   python -m decision_engine.paper_bot --report     # results by approach / bet kind
   python -m decision_engine.paper_bot --dry        # no news / bets / messages, predictions only
+
+CLV (closing line value) of each bet = our odds / the closing buy odds at the start - 1: the earliest honest sign of
+an edge (positive on average = we buy cheaper than the market's final price), long before the hit rate means anything.
 """
 
 from __future__ import annotations
@@ -247,6 +250,53 @@ def bet_cycle(pred: pd.DataFrame) -> list[int]:
     return new_ids
 
 
+def record_clv() -> int:
+    """CLV of the bets whose matches have started: per leg the closing buy price = the last order book ask before
+    the start (else the last history price), CLV = our odds / closing odds - 1 (positive: we bought cheaper than the
+    market's price at the start). Written into the legs and paper_bets.clv once."""
+    n = 0
+    with engine().connect() as c:
+        bets = c.execute(text("""SELECT id, legs FROM paper_bets WHERE clv IS NULL AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(legs) leg JOIN matches m ON m.id = (leg->>'match_id')::int
+            WHERE m.start_time > now())""")).all()
+        closes = {}
+        for _, legs in bets:
+            for leg in legs:
+                key = (int(leg["market_id"]), leg["outcome"])
+                if key in closes:
+                    continue
+                closes[key] = c.execute(text("""
+                    SELECT coalesce(
+                      (SELECT o.ask FROM odds_history o JOIN markets mk ON mk.id = o.market_id
+                         JOIN matches m ON m.id = mk.match_id
+                       WHERE o.market_id = :mk AND o.outcome = :o AND o.source_id = 4 AND o.snapshot IS NULL
+                         AND o.ask IS NOT NULL AND o.taken_at <= m.start_time ORDER BY o.taken_at DESC LIMIT 1),
+                      (SELECT o.price FROM odds_history o JOIN markets mk ON mk.id = o.market_id
+                         JOIN matches m ON m.id = mk.match_id
+                       WHERE o.market_id = :mk AND o.outcome = :o AND o.source_id = 4 AND o.snapshot = 'history'
+                         AND o.taken_at <= m.start_time ORDER BY o.taken_at DESC LIMIT 1))"""),
+                    {"mk": key[0], "o": key[1]}).scalar()
+    for bid, legs in bets:
+        ours, close = 1.0, 1.0
+        for leg in legs:
+            cp = closes.get((int(leg["market_id"]), leg["outcome"]))
+            if not cp:
+                close = None
+                break
+            leg["close_price"] = round(float(cp), 4)
+            leg["close_odds"] = round(1 / float(cp), 3)
+            leg["clv"] = round(leg["odds"] / leg["close_odds"] - 1, 4)
+            ours *= leg["odds"]
+            close *= leg["close_odds"]
+        if close is None:
+            continue
+        with session() as s_:
+            s_.execute(text("UPDATE paper_bets SET legs = CAST(:legs AS jsonb), clv = :clv WHERE id = :id"),
+                       {"legs": json.dumps(legs), "clv": round(ours / close - 1, 4), "id": bid})
+        n += 1
+    return n
+
+
 def settle() -> list[int]:
     done = []
     with engine().connect() as c:
@@ -309,11 +359,12 @@ def notify(new_ids: list[int], settled: list[int]) -> None:
             for b in c.execute(text("SELECT * FROM paper_bets WHERE id = ANY(:ids) ORDER BY id"), {"ids": new_ids}):
                 send(fmt_bet(b))
         if settled:
-            rows = c.execute(text("SELECT id, kind, status, odds, pnl FROM paper_bets WHERE id = ANY(:ids)"),
+            rows = c.execute(text("SELECT id, kind, status, odds, pnl, clv FROM paper_bets WHERE id = ANY(:ids)"),
                              {"ids": settled}).all()
             mark = {"won": "✅", "lost": "❌", "void": "↩️"}
             send("Расчёт бумажных ставок:\n" + "\n".join(
-                f"{mark.get(st, st)} #{i} {k} кэф {float(o):.2f}: {float(p):+.0f} ₸" for i, k, st, o, p in rows))
+                f"{mark.get(st, st)} #{i} {k} кэф {float(o):.2f}: {float(p):+.0f} ₸"
+                + (f" · CLV {float(cl):+.1%}" if cl is not None else "") for i, k, st, o, p, cl in rows))
     if new_ids:
         with session() as s:
             s.execute(text("UPDATE paper_bets SET notified = true WHERE id = ANY(:ids)"), {"ids": new_ids})
@@ -321,14 +372,17 @@ def notify(new_ids: list[int], settled: list[int]) -> None:
 
 def report() -> str:
     with engine().connect() as c:
-        df = pd.read_sql(text("SELECT kind, approach, status, odds, stake, pnl FROM paper_bets"), c)
+        df = pd.read_sql(text("SELECT kind, approach, status, odds, stake, pnl, clv FROM paper_bets"), c)
     if df.empty:
         return "Бумажных ставок пока нет."
     lines = ["Бумажные ставки:"]
     for (kind, appr), g in df.groupby(["kind", "approach"]):
         st = g[g.status.isin(["won", "lost"])]
         roi = float(st.pnl.sum() / st.stake.sum()) if len(st) else 0.0
-        lines.append(f"{kind} ({appr}): всего {len(g)}, открыто {(g.status == 'open').sum()}, "
+        clv = g.clv.dropna().astype(float)
+        lines.append(f"{kind} ({appr}): CLV {clv.mean():+.1%} по {len(clv)} ставкам" if len(clv) else
+                     f"{kind} ({appr}): CLV пока нет")
+        lines.append(f"  всего {len(g)}, открыто {(g.status == 'open').sum()}, "
                      f"выиграно {(g.status == 'won').sum()}, проиграно {(g.status == 'lost').sum()}, "
                      f"P&L {float(g.pnl.fillna(0).sum()):+.0f} ₸, ROI {roi:+.1%}")
     return "\n".join(lines)
@@ -347,6 +401,8 @@ def main() -> None:
         if args.send_report:
             send(r)
         return
+    if not args.dry:
+        print(f"clv recorded: {record_clv()}", flush=True)
     settled = [] if args.dry else settle()
     pred = predict_cycle(args.dry)
     new_ids = [] if args.dry else bet_cycle(pred)
