@@ -8,13 +8,22 @@ countries' all-seasons files, which the site updates twice a week. New rows only
   closing odds (Pinnacle, market average / max, Bet365, Betfair Exchange) as in the legacy import; a market the
   match already has (Polymarket's 1x2) gets the bookmaker quotes added.
 
+- upcoming matches from fixtures.csv / new_league_fixtures.csv (the site's pre-match odds of the next days, updated
+  a few times a week): a scheduled match is linked (same teams, +-1 day) or created - the results import later
+  finishes the same match - and its 1x2 / total 2.5 / Asian handicap quotes (Betfair Exchange, market average / max,
+  Bet365 ...; Pinnacle is no longer in these files) are added with snapshot 'fixture', taken_at = the download
+  time, only when a quote changed. The market reference next to Polymarket's price before the start.
+
   python -u -m data_engine.providers.football_data [--seasons 2]   # current season + the previous one
+  python -u -m data_engine.providers.football_data --no-fixtures   # results only
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
+import io
 import json
 import time
 from decimal import Decimal
@@ -24,8 +33,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.db import session
 from core.models import Market, Match, MatchStatistic, OddsQuote, RawPayload, SourceEntity
-from data_engine.legacy.football_data import (BROKEN_FILES, OU25, SOURCE, SPORT, STATS, Refs, kickoff, quotes_1x2,
-                                              quotes_ah, quotes_two_way, season_name)
+from data_engine.legacy.football_data import (AUTUMN_SPRING_EXTRA, BROKEN_FILES, EXTRA_COUNTRY, OU25, SOURCE, SPORT,
+                                              STATS, Refs, kickoff, quotes_1x2, quotes_ah, quotes_two_way,
+                                              season_name)
 from pmbot import footballdata as fd
 from pmbot.http import HttpClient
 
@@ -126,9 +136,93 @@ def import_rows(s, refs: Refs, rows: list[dict]) -> dict:
     return cnt
 
 
+FIXTURES = ("fixtures.csv", "new_league_fixtures.csv")
+COUNTRY_CODE = {v: k for k, v in EXTRA_COUNTRY.items()}
+_NOT_ODDS = {"Div", "Date", "Time", "Country", "League", "HomeTeam", "AwayTeam", "Home", "Away", "Referee"}
+
+
+def fetch_fixtures(http: HttpClient) -> tuple[list[dict], dict[str, str]]:
+    """Rows {div, league, date, time, home, away, odds} of the fixture files changed since the last run (ETag)."""
+    with session() as s:
+        etags = dict(s.execute(select(RawPayload.external_id, RawPayload.payload["etag"].astext).where(
+            RawPayload.source_id == SOURCE, RawPayload.kind == "fd_etag",
+            RawPayload.external_id.in_(FIXTURES))).all())
+    out, changed = [], {}
+    for path in FIXTURES:
+        r = http.get(f"{BASE}/{path}", headers={"If-None-Match": etags[path]} if etags.get(path) else None)
+        if r.status_code == 304:
+            continue
+        r.raise_for_status()
+        try:
+            raw = r.content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raw = r.content.decode("latin-1")
+        for row in csv.DictReader(io.StringIO(raw)):
+            row = {k.strip(): (v or "").strip() for k, v in row.items() if k and k.strip()}
+            div = row.get("Div") or COUNTRY_CODE.get(row.get("Country", ""))
+            date = fd._date(row.get("Date", ""))
+            home, away = row.get("HomeTeam") or row.get("Home"), row.get("AwayTeam") or row.get("Away")
+            if not (div and date and home and away) or (div not in fd.MAIN_DIVS and div not in EXTRA_COUNTRY):
+                continue
+            odds = {k: x for k, v in row.items() if k not in _NOT_ODDS and (x := fd._num(v, float)) is not None}
+            out.append({"div": div, "league": row.get("League") or None, "date": date, "time": row.get("Time") or None,
+                        "home": home, "away": away, "odds": odds})
+        if r.headers.get("etag"):
+            changed[path] = r.headers["etag"]
+    return out, changed
+
+
+def import_fixtures(s, refs: Refs, rows: list[dict], now: dt.datetime) -> dict:
+    cnt = {"new": 0, "linked": 0, "odds": 0}
+    for r in rows:
+        league_id, country = refs.league(r["div"], r["league"])
+        start, known = kickoff(r["date"], r["time"])
+        year = fd.current_season(start.date()) if r["div"] in fd.MAIN_DIVS or r["div"] in AUTUMN_SPRING_EXTRA \
+            else start.year
+        season_id = refs.season(league_id, season_name(r["div"], year))
+        home, away = refs.team(country, r["home"]), refs.team(country, r["away"])
+        hit = s.execute(text("""
+            SELECT id, home_team_id <> :h FROM matches WHERE sport_id = :sp
+              AND ((home_team_id = :h AND away_team_id = :a) OR (home_team_id = :a AND away_team_id = :h))
+              AND start_time BETWEEN :st - interval '1 day 12 hours' AND :st + interval '1 day 12 hours'
+            ORDER BY home_team_id <> :h, abs(extract(epoch FROM start_time - :st)) LIMIT 1"""),
+                        {"sp": SPORT, "h": home, "a": away, "st": start}).first()
+        mid, swapped = hit if hit else (None, False)  # swapped: another source has the sides the other way round
+        if mid:
+            cnt["linked"] += 1
+        else:
+            mid = s.scalar(insert(Match).values(
+                sport_id=SPORT, league_id=league_id, season_id=season_id, start_time=start, time_known=known,
+                home_team_id=home, away_team_id=away, status="scheduled").returning(Match.id))
+            cnt["new"] += 1
+        flip = {"home": "away", "away": "home"}
+        markets = [("1x2", None, quotes_1x2(r["odds"])), ("total", Decimal("2.5"), quotes_two_way(r["odds"], OU25))]
+        markets += [("spread", Decimal(str(-line if swapped else line)), q) for line, q in quotes_ah(r["odds"]).items()]
+        for kind, line, quotes in markets:
+            quotes = [(b, sn, flip.get(o, o) if swapped else o, v)
+                      for b, sn, o, v in quotes if sn == "pre"]  # closing columns are empty before the match
+            if not quotes:
+                continue
+            market_id = s.scalar(pg_insert(Market).values(match_id=mid, kind=kind, period=0, line=line)
+                                 .on_conflict_do_update(constraint="markets_match_kind_period_line_subject_key",
+                                                        set_={"kind": kind}).returning(Market.id))
+            last = {(o, b): float(v) for o, b, v in s.execute(text("""
+                SELECT DISTINCT ON (outcome, bookmaker) outcome, bookmaker, odds FROM odds_history
+                WHERE market_id = :m AND source_id = :src AND snapshot = 'fixture'
+                ORDER BY outcome, bookmaker, taken_at DESC"""), {"m": market_id, "src": SOURCE})}
+            new = [{"market_id": market_id, "outcome": o, "source_id": SOURCE, "bookmaker": b, "snapshot": "fixture",
+                    "odds": Decimal(str(v)), "taken_at": now}
+                   for b, _, o, v in quotes if last.get((o, b)) != round(float(v), 3)]
+            if new:
+                s.execute(insert(OddsQuote), new)
+                cnt["odds"] += len(new)
+    return cnt
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seasons", type=int, default=2, help="seasons back to look at (rows already imported skip)")
+    ap.add_argument("--no-fixtures", action="store_true", help="skip the upcoming matches' odds")
     args = ap.parse_args()
     t0 = time.time()
     http = HttpClient(min_interval=1.0, retries=4, timeout=60, headers={"Accept": "text/csv,*/*"})
@@ -149,6 +243,13 @@ def main() -> None:
     save_etags(changed)  # after the import: a failed run fetches the files again
     print(f"football-data: {len(changed)} files changed, {len(rows)} rows in them, "
           f"{sum(map(len, groups.values()))} new: {total} in {time.time() - t0:.0f}s")
+    if not args.no_fixtures:
+        t0 = time.time()
+        rows, changed = fetch_fixtures(http)
+        with session() as s:
+            c = import_fixtures(s, Refs(s), rows, dt.datetime.now(dt.timezone.utc))
+        save_etags(changed)
+        print(f"fixtures: {len(changed)} files changed, {len(rows)} rows: {c} in {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

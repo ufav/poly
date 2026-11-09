@@ -5,11 +5,11 @@ Every source is incremental, so an hour without news costs a few requests:
   - Olimpbet results of today + yesterday (5 sports) -> matches;
   - ESPN today + yesterday (NBA, WNBA, NHL, European cups, top football leagues): box scores, lineups and player
     stats of the games that just ended; NBA / WNBA / NHL injury reports (changes only);
-  - football-data files by ETag (304 when the site did not update);
+  - football-data files by ETag (304 when the site did not update), including the upcoming matches' odds;
   - tennis-data only when the download page's 'Updated' date changed;
   - Polymarket price history of the games that ended in the last 2 days;
   - Polymarket matches / teams linked to the results, duplicates of the last week merged;
-  - the paper bot (decision_engine/paper_bot.py): settle, predict, news check, bets, Telegram.
+  - the paper bot (decision_engine/paper_bot.py): settle, pre-start check, predict, news check, bets, Telegram.
 
   python -m workers.pipeline
 """

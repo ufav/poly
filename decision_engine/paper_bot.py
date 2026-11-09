@@ -1,7 +1,9 @@
 """Paper betting bot (docs/md1.md 9-11; the user's two bet kinds, memory: betting-goal). Every run (hourly, in
 workers/pipeline.py):
 
-1. settle the open paper bets whose matches have a result;
+1. settle the open paper bets whose matches have a result; a leg without one RESOLVE_AFTER_H after the start is
+   settled by the resolution of its Polymarket market (Gamma: closed, outcomePrices 1 / 0) - where the real bet is
+   settled anyway, by Polymarket's rules (retirements ...);
 2. predictions for the Polymarket tennis matches starting in the next 24 h: A (CatBoost), B (form), C (combined),
    both sides, at the buy price (ask) of the latest order book snapshot -> predictions (append-only: a new version
    only when p or the price moved by 0.01+);
@@ -10,7 +12,11 @@ workers/pipeline.py):
 4. bets (flat STAKE): favourites parlays - 2 legs of different matches, total odds >= PARLAY_MIN_ODDS, the highest
    joint probability first, up to MAX_PARLAYS a day; value singles (experimental) - A p >= VALUE_MIN_P and
    p * odds - 1 >= VALUE_EDGE, up to MAX_SINGLES a day;
-5. Telegram: the new bets and the settled ones.
+5. Telegram: the new bets and the settled ones;
+6. pre-start check of the open bets: each leg once, PRE_FROM_MIN-PRE_TO_MIN before its start - a fresh news check
+   (no cache) and the buy odds now vs ours; a confirmed bad fact or the market moving against the pick by
+   MARKET_MOVE+ sends a warning (time to sell the position on Polymarket). The paper bet stays as placed, the check
+   is stored in the leg (legs[].prestart) to measure later whether the warnings were worth acting on.
 
   python -m decision_engine.paper_bot              # one cycle
   python -m decision_engine.paper_bot --report     # results by approach / bet kind
@@ -49,6 +55,9 @@ VALUE_MIN_P = 0.45
 MAX_SINGLES = 3
 STAKE = Decimal("30")          # ₸ of the 300 ₸ playing limit (docs/md1.md 10, flat stake)
 ASK_MAX_AGE_MIN = 40
+PRE_FROM_MIN, PRE_TO_MIN = 15, 150   # hourly runs: every leg falls into the window at least once
+RESOLVE_AFTER_H = 3
+MARKET_MOVE = 0.15                   # our pick's buy odds up 15%+ since the bet: the market knows something
 BAD_NEWS = {"injury", "withdrawal", "suspension", "fatigue"}
 # reassurance the LLM may still list as a fact: "not listed among injured players", "no injury reported"
 NEGATED = re.compile(r"\b(no|not|without|fully fit|cleared)\b.{0,40}\b(injur|listed|reported|concern|issue|problem)",
@@ -138,13 +147,15 @@ def surname(name: str | None) -> str:
     return max(words, key=len).lower() if words else ""
 
 
-def news_verdict(fav: dict) -> tuple[bool, dict]:
-    """(ok, news result) for a shortlisted favourite; cached per match for NEWS_HOURS."""
+def news_verdict(fav: dict, fresh: bool = False) -> tuple[bool, dict]:
+    """(ok, news result) for a shortlisted favourite; cached per match for NEWS_HOURS unless fresh."""
     from ai_engine.news_check import check
-    with engine().connect() as c:
-        cached = c.execute(text("""SELECT news FROM predictions WHERE match_id = :m AND news IS NOT NULL
-            AND created_at > now() - make_interval(hours => :h) ORDER BY created_at DESC LIMIT 1"""),
-            {"m": int(fav["match_id"]), "h": NEWS_HOURS}).scalar()
+    cached = None
+    if not fresh:
+        with engine().connect() as c:
+            cached = c.execute(text("""SELECT news FROM predictions WHERE match_id = :m AND news IS NOT NULL
+                AND created_at > now() - make_interval(hours => :h) ORDER BY created_at DESC LIMIT 1"""),
+                {"m": int(fav["match_id"]), "h": NEWS_HOURS}).scalar()
     if cached:
         news = cached
     else:
@@ -250,6 +261,59 @@ def bet_cycle(pred: pd.DataFrame) -> list[int]:
     return new_ids
 
 
+def prestart() -> list[str]:
+    """Pre-start check of the open bets' legs (see the module doc, step 6); returns the warnings."""
+    now = dt.datetime.now(dt.timezone.utc)
+    lo, hi = now + dt.timedelta(minutes=PRE_FROM_MIN), now + dt.timedelta(minutes=PRE_TO_MIN)
+    with engine().connect() as c:
+        bets = c.execute(text("SELECT id, kind, odds, legs FROM paper_bets WHERE status = 'open'")).all()
+        todo = [(b, leg) for b in bets for leg in b.legs
+                if "prestart" not in leg and lo <= dt.datetime.fromisoformat(leg["start"]) <= hi]
+        if not todo:
+            return []
+        info = {r["match_id"]: r for r in c.execute(text("""
+            SELECT m.id match_id, m.start_time, th.name home, ta.name away, l.name league,
+                   (SELECT se.external_name FROM source_entities se WHERE se.source_id = 4 AND se.entity_type = 'team'
+                      AND se.entity_id = m.home_team_id LIMIT 1) pm_home,
+                   (SELECT se.external_name FROM source_entities se WHERE se.source_id = 4 AND se.entity_type = 'team'
+                      AND se.entity_id = m.away_team_id LIMIT 1) pm_away
+            FROM matches m JOIN teams th ON th.id = m.home_team_id JOIN teams ta ON ta.id = m.away_team_id
+            JOIN leagues l ON l.id = m.league_id WHERE m.id = ANY(:ids)"""),
+            {"ids": list({int(leg["match_id"]) for _, leg in todo})}).mappings()}
+        cur = asks(c, list({int(leg["market_id"]) for _, leg in todo}))
+    warnings, changed = [], {}
+    for b, leg in todo:
+        x = info.get(int(leg["match_id"]))
+        if x is None:
+            continue
+        ok, news = news_verdict({**x, "side": leg["outcome"]}, fresh=True)
+        ask = cur.get((int(leg["market_id"]), leg["outcome"]))
+        odds_now = round(1 / ask[0], 3) if ask and ask[0] else None
+        against = odds_now is not None and odds_now / leg["odds"] - 1 >= MARKET_MOVE
+        bad = [f.get("description") or f.get("category") for f in news["bad_facts"]][:3]
+        leg["prestart"] = {"at": now.isoformat(timespec="seconds"), "verdict": news["verdict"], "bad_facts": bad,
+                           "odds_now": odds_now, "market_against": against, "error": news.get("error")}
+        changed[b.id] = b.legs
+        if ok and not against:
+            continue
+        title = {"fav_parlay": "экспресс фаворитов", "value_single": "валуйный ординар"}.get(b.kind, b.kind)
+        t = dt.datetime.fromisoformat(leg["start"]).astimezone(ALMATY)
+        lines = [f"⚠️ Перед стартом: ставка #{b.id} ({title}, общий кэф {float(b.odds):.2f})",
+                 f"Нога: {leg['pick']} ({leg['match']}, {t:%d.%m %H:%M})"]
+        lines += [f"Новость: {d}" for d in bad]
+        if odds_now is not None:
+            lines.append(f"Кэф сейчас {odds_now:.2f}, при ставке {leg['odds']:.2f} ({odds_now / leg['odds'] - 1:+.0%})"
+                         + (": рынок против" if against else ""))
+        lines.append("Если ставка сделана на Polymarket — стоит подумать о продаже позиции до старта.")
+        warnings.append("\n".join(lines))
+    with session() as s_:
+        for bid, legs in changed.items():
+            s_.execute(text("UPDATE paper_bets SET legs = CAST(:legs AS jsonb) WHERE id = :id"),
+                       {"legs": json.dumps(legs), "id": bid})
+    print(f"prestart: {len(todo)} legs checked, {len(warnings)} warnings", flush=True)
+    return warnings
+
+
 def record_clv() -> int:
     """CLV of the bets whose matches have started: per leg the closing buy price = the last order book ask before
     the start (else the last history price), CLV = our odds / closing odds - 1 (positive: we bought cheaper than the
@@ -297,13 +361,34 @@ def record_clv() -> int:
     return n
 
 
+def pm_resolution(extra: dict | None, outcome: str) -> bool | None:
+    """Did the outcome win by the resolution of its Polymarket market; None while open / unknown."""
+    token = ((extra or {}).get("tokens") or {}).get(outcome)
+    conds = (extra or {}).get("conditions") or []
+    if not token or len(conds) != 1:  # a 3-way 1x2 (three conditions) is not used in the paper bets
+        return None
+    try:
+        got = httpx.get("https://gamma-api.polymarket.com/markets",
+                        params={"condition_ids": conds[0], "closed": "true"}, timeout=20).json()
+        m = next(x for x in got if x.get("conditionId") == conds[0])
+        prices, tokens = json.loads(m["outcomePrices"]), json.loads(m["clobTokenIds"])
+    except (httpx.HTTPError, ValueError, KeyError, StopIteration, TypeError):
+        return None
+    if not m.get("closed") or sorted(prices) != ["0", "1"] or token not in tokens:
+        return None
+    return prices[tokens.index(token)] == "1"
+
+
 def settle() -> list[int]:
     done = []
+    late = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=RESOLVE_AFTER_H)
     with engine().connect() as c:
         bets = c.execute(text("SELECT id, legs, odds, stake FROM paper_bets WHERE status = 'open'")).all()
         ids = list({int(leg["match_id"]) for _, legs, _, _ in bets for leg in legs})
         res = {m: (st, hs, aw) for m, st, hs, aw in c.execute(text(
             "SELECT id, status, home_score, away_score FROM matches WHERE id = ANY(:ids)"), {"ids": ids})}
+        extras = dict(c.execute(text("SELECT id, extra FROM markets WHERE id = ANY(:ids)"),
+                                {"ids": list({int(leg["market_id"]) for _, legs, _, _ in bets for leg in legs})}).all())
     for bid, legs, odds, stake in bets:
         outcome, eff_odds = "won", 1.0
         for leg in legs:
@@ -311,9 +396,13 @@ def settle() -> list[int]:
             if st in ("walkover", "cancelled", "abandoned"):
                 continue  # void leg
             if st != "finished" or hs is None or hs == aw:
-                outcome = "open" if outcome == "won" else outcome
-                continue
-            won = (hs > aw) == (leg["outcome"] == "home")
+                won = pm_resolution(extras.get(int(leg["market_id"])), leg["outcome"]) \
+                    if dt.datetime.fromisoformat(leg["start"]) < late else None
+                if won is None:
+                    outcome = "open" if outcome == "won" else outcome
+                    continue
+            else:
+                won = (hs > aw) == (leg["outcome"] == "home")
             if not won:
                 outcome = "lost"
             else:
@@ -404,6 +493,8 @@ def main() -> None:
     if not args.dry:
         print(f"clv recorded: {record_clv()}", flush=True)
     settled = [] if args.dry else settle()
+    for w in [] if args.dry else prestart():
+        send(w)
     pred = predict_cycle(args.dry)
     new_ids = [] if args.dry else bet_cycle(pred)
     if args.dry and not pred.empty:

@@ -10,7 +10,7 @@ core/                     настройки (.env: DATABASE_URL), PostgreSQL (S
   seed.py                 виды спорта и источники (`python -m core.seed`)
 migrations/               Alembic (`alembic upgrade head`)
 data_engine/legacy/       перенос собранных SQLite в PostgreSQL
-  football_data.py        football-data.co.uk: матчи, статистика, 1X2 / ТБ2.5 / АФ — pre-match и закрытие (Pinnacle, среднее, макс., Bet365, Betfair)
+  football_data.py        football-data.co.uk: матчи, статистика, 1X2 / ТБ2.5 / АФ — pre-match и закрытие (Pinnacle, среднее, макс., Bet365, Betfair); ближайшие матчи из fixtures.csv / new_league_fixtures.csv — кэфы до старта (Betfair Exchange, среднее, макс., Bet365; Pinnacle в этих файлах больше нет), `snapshot = fixture`
 requirements-platform.txt зависимости платформы
 ```
 
@@ -18,7 +18,7 @@ requirements-platform.txt зависимости платформы
 
 Сбор результатов Olimpbet по 5 видам спорта (`data_engine/providers/olimpbet_results.py`): сырые ответы по дням → `raw_payloads` (`results_en`, `results_ru`); `--backfill` — ~14 месяцев, которые сайт хранит со счётом; `--daily` — последние 3 дня и пропуски.
 
-Ежечасная цепочка (`workers/pipeline.py`, шаги по порядку, упавший шаг не останавливает следующие): Olimpbet `--recent 2` (сегодня + вчера) → нормализация `--days 2` → ESPN `--recent 2` (бокс-скор только только что закончившихся; при недоступности ESPN — пропуск до следующего часа) → football-data (условные запросы по ETag, 304 без изменений) → tennis-data `--if-updated` (по дате «Updated» страницы) → история Polymarket за 2 дня → связь с Polymarket → `dedupe` за неделю (`--vote-source 9`). Все источники инкрементальные: час без новостей — несколько десятков запросов. Оповещения (`workers/alerts.py`): Telegram, когда шаг цепочки / задача падает 3 раза подряд (снимки стакана — 6), и когда снова работает; счётчики в `data/alerts_state.json`.
+Ежечасная цепочка (`workers/pipeline.py`, шаги по порядку, упавший шаг не останавливает следующие): Olimpbet `--recent 2` (сегодня + вчера) → нормализация `--days 2` → ESPN `--recent 2` (бокс-скор только только что закончившихся; при недоступности ESPN — пропуск до следующего часа) → football-data (условные запросы по ETag, 304 без изменений; плюс файлы ближайших матчей: матч привязывается к уже известному — те же команды ±1,5 дня, в т. ч. с переставленными хозяевами — или создаётся `scheduled`, кэфы пишутся только при изменении) → tennis-data `--if-updated` (по дате «Updated» страницы) → история Polymarket за 2 дня → связь с Polymarket → `dedupe` за неделю (`--vote-source 9`). Все источники инкрементальные: час без новостей — несколько десятков запросов. Оповещения (`workers/alerts.py`): Telegram, когда шаг цепочки / задача падает 3 раза подряд (снимки стакана — 6), и когда снова работает; счётчики в `data/alerts_state.json`.
 
 Нормализация (`data_engine/normalization/olimpbet_results.py`): сырые дни → `matches` 5 видов + `match_statistics` (события статистики по `baseEventId`). Хоккей: `currentScore` — основное время, период 4 — овертайм, 5 — буллиты (победителю +1), основное время в `result_extra.regulation`. Баскетбол: счёт с овертаймом. Теннис / волейбол: счёт по сетам, `periods` — геймы / очки. Связывается только с матчами других источников (свои повторы в любительских лигах — разные матчи).
 
@@ -35,9 +35,11 @@ requirements-platform.txt зависимости платформы
 
 Рынки Polymarket (`polymarket_prices.KINDS`): кроме исхода, фор и тоталов — ставки на игроков NBA (`player_points` / `rebounds` / `assists` / `threes` / `steals` / `blocks`, `subject` = игрок, «Да» = больше линии), половины (`period` 11 / 12) и четверти (1–4), индивидуальные тоталы (`team_total`, `subject` = home / away), овертайм, теннис: победитель сета (`moneyline`, period = номер сета), фора по сетам (`set_spread`) и геймам (`spread`), тотал сетов (`total_sets`), тотал геймов сета (`total_games`, period = сет), «обе забьют» (`btts`). Уникальность рынка: матч + kind + period + line + subject. Стакан дополнительных рынков (period ≠ 0 или есть subject) — только за 6 ч до начала; строка — когда изменились бид / аск или объём на 30%+.
 
+Проверка перед стартом (`paper_bot.prestart`): каждая нога открытой ставки один раз за 15–150 мин до начала — свежая проверка новостей (без кэша) и текущий кэф покупки против нашего; подтверждённая плохая новость или рост кэфа на 15%+ («рынок против») → предупреждение в Telegram (время продать позицию на Polymarket). Бумажная ставка не меняется, проверка пишется в ногу (`legs[].prestart`) — чтобы потом оценить, стоило ли слушать предупреждения. Расчёт: по счёту матча; если счёта нет через 3 ч после начала — по разрешению рынка Polymarket (Gamma `closed=true`, `outcomePrices` 1 / 0; по правилам Polymarket, где и рассчитывается реальная ставка).
+
 CLV бумажных ставок (`decision_engine/paper_bot.record_clv`): после начала матча — закрывающая цена покупки (последний аск до старта, иначе последняя цена истории); CLV = наш кэф / закрывающий − 1, по ногам и по ставке (`paper_bets.clv`), в расчётах и в ежедневном отчёте.
 
-Котировки: `snapshot = pre` (за 1–2 дня до матча, football-data) / `closing` / NULL (котировка со временем `taken_at`, сборщики). Polymarket: `price`, `bid`, `ask`, `ask_size`, `odds = 1/ask`.
+Котировки: `snapshot = pre` (за 1–2 дня до матча, football-data), `fixture` (football-data до матча, `taken_at` — время скачивания) / `closing` / NULL (котировка со временем `taken_at`, сборщики). Polymarket: `price`, `bid`, `ask`, `ask_size`, `odds = 1/ask`.
 
 # Прежняя система (Polymarket / киберспорт)
 
