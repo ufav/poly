@@ -36,7 +36,7 @@ def steps() -> list[tuple[str, list[str], int]]:
         ("espn_injuries", ["data_engine.providers.espn_injuries"], 5),
         ("football_data", ["data_engine.providers.football_data"], 10),
         ("tennis_data", ["data_engine.providers.tennis_data", "--if-updated"], 15),
-        ("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "2"], 20),
+        ("polymarket_history", ["data_engine.providers.polymarket_history", "--days", "2"], 45),
         ("polymarket_links", ["data_engine.normalization.polymarket_links"], 10),
         ("dedupe", ["data_engine.normalization.dedupe", "--since", week_ago, "--vote-source", "9"], 10),
         # paper bets: settle, predict the next 24 h (tennis), news check of the shortlist, parlays / singles, Telegram

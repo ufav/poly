@@ -117,7 +117,7 @@ def import_rows(s, refs: Refs, rows: list[dict]) -> dict:
             if not quotes:
                 continue
             market_id = s.scalar(pg_insert(Market).values(match_id=mid, kind=kind, period=0, line=line)
-                                 .on_conflict_do_update(constraint="markets_match_id_kind_period_line_key",
+                                 .on_conflict_do_update(constraint="markets_match_kind_period_line_subject_key",
                                                         set_={"kind": kind}).returning(Market.id))
             s.execute(insert(OddsQuote), [{"market_id": market_id, "outcome": o, "source_id": SOURCE,
                                            "bookmaker": b, "snapshot": snap, "odds": Decimal(str(v))}

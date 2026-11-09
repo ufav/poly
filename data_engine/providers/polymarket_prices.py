@@ -54,7 +54,28 @@ SERIES = {
 CLUB_WORDS = {"fc", "afc", "cf", "sc", "ac", "ssc", "fk", "sk", "bk", "cd", "ud", "sd", "rc", "rcd", "sv", "vfl",
               "vfb", "tsg", "1", "calcio", "hotspur", "albion", "and", "hove"}
 GENDER = {"wta": "f", "wnba": "f"}
-KINDS = {"moneyline": None, "spreads": "spread", "totals": "total", "tennis_match_totals": "total_games"}
+# sportsMarketType -> (our kind, period, outcome shape); period 0 = match, 1..5 = set / quarter, 11 / 12 = halves.
+# shapes: sides (the two teams / players), sides_line (+ a handicap, stored as the home handicap), ou (over / under),
+# team_ou (a team total: subject = home / away), prop (a player's Yes = over the line: subject = the player), yesno
+KINDS = {
+    "moneyline": ("moneyline", 0, "sides"), "spreads": ("spread", 0, "sides_line"), "totals": ("total", 0, "ou"),
+    "tennis_match_totals": ("total_games", 0, "ou"),
+    # football
+    "both_teams_to_score": ("btts", 0, "yesno"),
+    # basketball: halves, quarters, team totals, overtime, player props
+    "first_half_moneyline": ("moneyline", 11, "sides"), "first_half_spreads": ("spread", 11, "sides_line"),
+    "first_half_totals": ("total", 11, "ou"),
+    **{f"q{q}_spreads": ("spread", q, "sides_line") for q in range(1, 5)},
+    **{f"q{q}_totals": ("total", q, "ou") for q in range(1, 5)},
+    "team_totals": ("team_total", 0, "team_ou"), "first_half_team_totals": ("team_total", 11, "team_ou"),
+    "second_half_team_totals": ("team_total", 12, "team_ou"), "basketball_game_overtime": ("overtime", 0, "yesno"),
+    **{t: (f"player_{t}", 0, "prop") for t in ("points", "rebounds", "assists", "threes", "steals", "blocks")},
+    # tennis: sets
+    "tennis_first_set_winner": ("moneyline", 1, "sides"), "tennis_set_winner": ("moneyline", None, "sides"),
+    "tennis_set_handicap": ("set_spread", 0, "sides_line"), "tennis_game_handicap": ("spread", 0, "sides_line"),
+    "tennis_set_totals": ("total_sets", 0, "ou"), "tennis_first_set_totals": ("total_games", 1, "ou"),
+    "tennis_set_games_totals": ("total_games", None, "ou"),
+}
 
 
 def series_ids(http: HttpClient) -> dict[str, str]:
@@ -265,9 +286,14 @@ def tag_event_weeks(http: HttpClient, tag: str, now: dt.datetime, days: int, foo
         lo = hi
 
 
+def set_number(m: dict) -> int | None:
+    found = re.search(r"Set (\d)", f"{m.get('question') or ''} {m.get('groupItemTitle') or ''}")
+    return int(found[1]) if found else None
+
+
 def markets_of(e: dict, home: dict, away: dict, football: bool, closed: bool = False) -> list[dict]:
-    """Market rows {kind, line, tokens {outcome: token}, conditions [...]} of one event; closed markets only with
-    closed=True (price history of past games)."""
+    """Market rows {kind, period, line, subject, tokens {outcome: token}, conditions [...]} of one event; closed
+    markets only with closed=True (price history of past games). Shapes: see KINDS."""
     out = []
     markets = [m for m in e["markets"] if m.get("clobTokenIds") and m.get("outcomes")]  # never listed: no tokens
     ml = [m for m in markets if (m.get("sportsMarketType") == "moneyline" or (football and old_1x2_leg(m)))
@@ -281,26 +307,49 @@ def markets_of(e: dict, home: dict, away: dict, football: bool, closed: bool = F
             if side:
                 tokens[side] = yes
         if len(tokens) == 3:
-            out.append({"kind": "1x2", "line": None, "tokens": tokens, "conditions": [m["conditionId"] for m in ml]})
+            out.append({"kind": "1x2", "period": 0, "line": None, "subject": None, "tokens": tokens,
+                        "conditions": [m["conditionId"] for m in ml]})
     for m in markets:
         t = m.get("sportsMarketType")
         if (m.get("closed") and not closed) or t not in KINDS or (t == "moneyline" and football):
             continue
+        kind, period, shape = KINDS[t]
+        if period is None:  # 'Set 2 Winner' / 'Set 2 Games O/U'
+            period = int(m["line"]) if t == "tennis_set_winner" and m.get("line") else set_number(m)
+            if period is None:
+                continue
         outs, toks = json.loads(m["outcomes"]), json.loads(m["clobTokenIds"])
-        if t in ("totals", "tennis_match_totals"):
+        if len(outs) != 2 or len(toks) != 2:
+            continue
+        row = {"kind": kind, "period": period, "line": None, "subject": None, "conditions": [m["conditionId"]]}
+        if shape in ("ou", "team_ou"):
             names = ["over" if o.lower().startswith("over") else "under" for o in outs]
-            out.append({"kind": KINDS[t], "line": m.get("line"), "tokens": dict(zip(names, toks)),
-                        "conditions": [m["conditionId"]]})
-            continue
-        s0 = side_of(outs[0], home, away) or ("home" if t == "moneyline" else None)
-        if not s0:
-            continue
-        s1 = "away" if s0 == "home" else "home"
-        line = m.get("line")
-        if t == "spreads" and line is not None:
-            line = line if s0 == "home" else -line  # stored as the home handicap
-        out.append({"kind": KINDS[t] or "moneyline", "line": line if t == "spreads" else None,
-                    "tokens": {s0: toks[0], s1: toks[1]}, "conditions": [m["conditionId"]]})
+            if set(names) != {"over", "under"}:
+                continue
+            row.update(line=m.get("line"), tokens=dict(zip(names, toks)))
+            if shape == "team_ou":  # 'Kings Team Total: O/U 106.5' / 'Kings 1H O/U 54.5'
+                team = re.split(r"\s+(Team Total|1H|2H|O/U)", m.get("groupItemTitle") or m.get("question") or "")[0]
+                row["subject"] = side_of(team, home, away)
+                if not row["subject"]:
+                    continue
+        elif shape in ("prop", "yesno"):
+            names = ["yes" if o.lower() == "yes" else "no" for o in outs]
+            if set(names) != {"yes", "no"}:
+                continue
+            row["tokens"] = dict(zip(names, toks))
+            if shape == "prop":  # 'Victor Wembanyama: Points O/U 28.5' - yes = over the line
+                row.update(line=m.get("line"), subject=(m.get("question") or "").split(":")[0].strip()[:80] or None)
+                if not row["subject"]:
+                    continue
+        else:  # sides / sides_line
+            s0 = side_of(outs[0], home, away) or ("home" if t == "moneyline" else None)
+            if not s0:
+                continue
+            s1 = "away" if s0 == "home" else "home"
+            row["tokens"] = {s0: toks[0], s1: toks[1]}
+            if shape == "sides_line" and m.get("line") is not None:
+                row["line"] = m["line"] if s0 == "home" else -m["line"]  # stored as the home handicap
+        out.append(row)
     return out
 
 
@@ -308,9 +357,10 @@ def upsert_market(s, match_id: int, mk: dict, event_id) -> int:
     """The market row of a match (Polymarket tokens / conditions in extra, merged into a row another source made)."""
     line = Decimal(str(mk["line"])) if mk["line"] is not None else None
     extra = {"tokens": mk["tokens"], "conditions": mk["conditions"], "event": str(event_id)}
-    stmt = pg_insert(Market).values(match_id=match_id, kind=mk["kind"], period=0, line=line, extra=extra)
+    stmt = pg_insert(Market).values(match_id=match_id, kind=mk["kind"], period=mk.get("period") or 0, line=line,
+                                    subject=mk.get("subject"), extra=extra)
     return s.scalar(stmt.on_conflict_do_update(
-        constraint="markets_match_id_kind_period_line_key",
+        constraint="markets_match_kind_period_line_subject_key",
         set_={"extra": text("COALESCE(markets.extra, '{}'::jsonb) || excluded.extra")}).returning(Market.id))
 
 
@@ -410,18 +460,24 @@ def books(tokens: list[str]) -> dict[str, dict]:
     return out
 
 
+EXTRA_HOURS = 6        # props / halves / quarters: order books only in the last hours before the start
+SIZE_MOVE = 0.30       # a new row when bid / ask changed, or the size at the best ask moved by 30%+
+
+
 def snapshot(now: dt.datetime) -> int:
     with session() as s:
         rows = s.execute(text("""
             SELECT mk.id, o.key, o.value FROM markets mk JOIN matches m ON m.id = mk.match_id,
                    jsonb_each_text(mk.extra->'tokens') o
             WHERE mk.extra ? 'tokens' AND m.status IN ('scheduled', 'live')
-              AND m.start_time BETWEEN :lo AND :hi"""),
-                         {"lo": now - dt.timedelta(hours=LIVE_HOURS),
-                          "hi": now + dt.timedelta(days=SNAPSHOT_DAYS)}).all()
+              AND m.start_time BETWEEN :lo AND :hi
+              AND ((mk.period = 0 AND mk.subject IS NULL) OR m.start_time <= :extra)"""),
+                         {"lo": now - dt.timedelta(hours=LIVE_HOURS), "hi": now + dt.timedelta(days=SNAPSHOT_DAYS),
+                          "extra": now + dt.timedelta(hours=EXTRA_HOURS)}).all()
         last = {(mid, out): (b, a, z) for mid, out, b, a, z in s.execute(text("""
             SELECT DISTINCT ON (market_id, outcome) market_id, outcome, bid, ask, ask_size FROM odds_history
-            WHERE source_id = :src AND market_id = ANY(:ids) ORDER BY market_id, outcome, taken_at DESC"""),
+            WHERE source_id = :src AND snapshot IS NULL AND market_id = ANY(:ids)
+            ORDER BY market_id, outcome, taken_at DESC"""),
             {"src": SOURCE, "ids": list({r[0] for r in rows})})}
     got = books([r[2] for r in rows])
     quotes = []
@@ -429,10 +485,14 @@ def snapshot(now: dt.datetime) -> int:
         b = got.get(token)
         if not b or (b["bid"] is None and b["ask"] is None):
             continue
-        key = tuple(Decimal(str(x)) if x is not None else None for x in (b["bid"], b["ask"], b["ask_size"]))
         prev = last.get((market_id, outcome))
-        if prev and tuple(Decimal(str(x)) if x is not None else None for x in prev) == key:
-            continue
+        if prev:
+            pb, pa, pz = (float(x) if x is not None else None for x in prev)
+            same_price = pb == b["bid"] and pa == b["ask"]
+            size_moved = (pz is None) != (b["ask_size"] is None) or (
+                pz and b["ask_size"] is not None and abs(b["ask_size"] - pz) / pz > SIZE_MOVE)
+            if same_price and not size_moved:
+                continue
         mid_price = (b["bid"] + b["ask"]) / 2 if b["bid"] is not None and b["ask"] is not None else None
         quotes.append({"market_id": market_id, "outcome": outcome, "source_id": SOURCE, "bookmaker": "polymarket",
                        "bid": b["bid"], "ask": b["ask"], "ask_size": b["ask_size"],
@@ -440,7 +500,8 @@ def snapshot(now: dt.datetime) -> int:
                        "odds": round(1 / b["ask"], 3) if b["ask"] else None, "taken_at": now})
     if quotes:
         with session() as s:
-            s.execute(pg_insert(OddsQuote), quotes)
+            for c in range(0, len(quotes), 5000):
+                s.execute(pg_insert(OddsQuote), quotes[c:c + 5000])
     return len(quotes)
 
 

@@ -170,10 +170,11 @@ def remap(s, tid: int, target: int) -> None:
 
 def move_markets(s, src: int, dst: int) -> None:
     """Markets of match src -> match dst; a market dst already has absorbs the odds."""
-    for mk, kind, period, line in s.execute(text("SELECT id, kind, period, line FROM markets WHERE match_id = :m"),
-                                            {"m": src}).all():
+    for mk, kind, period, line, subj in s.execute(text(
+            "SELECT id, kind, period, line, subject FROM markets WHERE match_id = :m"), {"m": src}).all():
         twin = s.scalar(text("SELECT id FROM markets WHERE match_id = :d AND kind = :k AND period = :p "
-                             "AND line IS NOT DISTINCT FROM :l"), {"d": dst, "k": kind, "p": period, "l": line})
+                             "AND line IS NOT DISTINCT FROM :l AND subject IS NOT DISTINCT FROM :su"),
+                        {"d": dst, "k": kind, "p": period, "l": line, "su": subj})
         if twin:
             s.execute(text("UPDATE odds_history SET market_id = :t WHERE market_id = :m"), {"t": twin, "m": mk})
             s.execute(text("UPDATE markets SET extra = COALESCE(extra, '{}'::jsonb) || "

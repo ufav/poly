@@ -180,14 +180,18 @@ class Injury(Base):
 # ---------- markets and odds ----------
 
 class Market(Base):
-    """A betting market of a match: kind + period (0 = match; map / set / half number) + line."""
+    """A betting market of a match: kind + period + line (+ subject: the player of a prop, the side of a team total).
+    period: 0 = match, 1..5 = set / quarter / period number, 11 / 12 = first / second half."""
     __tablename__ = "markets"
-    __table_args__ = (UniqueConstraint("match_id", "kind", "period", "line", postgresql_nulls_not_distinct=True),)
+    __table_args__ = (UniqueConstraint("match_id", "kind", "period", "line", "subject",
+                                       name="markets_match_kind_period_line_subject_key",
+                                       postgresql_nulls_not_distinct=True),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     match_id: Mapped[int] = mapped_column(ForeignKey("matches.id", ondelete="CASCADE"))
-    kind: Mapped[str] = mapped_column(String(24))                # 1x2 / moneyline / total / spread / btts ...
+    kind: Mapped[str] = mapped_column(String(24))                # 1x2 / moneyline / total / spread / player_points ...
     period: Mapped[int] = mapped_column(SmallInteger, default=0)
     line: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))  # total 2.5, handicap -1.5
+    subject: Mapped[str | None] = mapped_column(String(80))      # 'Victor Wembanyama' / 'home' / 'away'
     extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))  # venue ids (Polymarket condition / tokens ...)
 
 

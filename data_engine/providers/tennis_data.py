@@ -230,7 +230,7 @@ def import_file(tour: str, year: int, df: pd.DataFrame) -> dict:
                     quotes += [("home" if win_home else "away", book, ow), ("away" if win_home else "home", book, ol)]
             if quotes:
                 market = s.scalar(pg_insert(Market).values(match_id=mid, kind="moneyline", period=0, line=None)
-                                  .on_conflict_do_update(constraint="markets_match_id_kind_period_line_key",
+                                  .on_conflict_do_update(constraint="markets_match_kind_period_line_subject_key",
                                                          set_={"kind": "moneyline"}).returning(Market.id))
                 s.execute(insert(OddsQuote), [{"market_id": market, "outcome": o, "source_id": SOURCE,
                                                "bookmaker": b, "snapshot": "closing", "odds": v}
