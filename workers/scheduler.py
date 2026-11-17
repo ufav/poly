@@ -41,7 +41,8 @@ JOBS = [
     Job("olimpbet_backfill", ["data_engine.providers.olimpbet_results", "--backfill"], at=dt.time(2, 0),
         timeout_min=240),
     # the paper bets summary to Telegram (22:00 Almaty)
-    Job("paper_report", ["decision_engine.paper_bot", "--send-report"], at=dt.time(17, 0), timeout_min=5),
+    # stopped with the paper bot (2026-11-17)
+    # Job("paper_report", ["decision_engine.paper_bot", "--send-report"], at=dt.time(17, 0), timeout_min=5),
 ]
 
 
